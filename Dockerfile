@@ -20,10 +20,36 @@ RUN apt-get -y update && \
 # The qemu-user-static and binfmt-support packages are installed above
 
 # Install official Raspberry Pi rpi-image-gen
-RUN git clone --depth 1 https://github.com/raspberrypi/rpi-image-gen.git /rpi-image-gen && \
+RUN git clone --depth 1 https://github.com/raspberrypi/rpi-image-gen.git /rpi-image-gen
+
+# Install dependencies manually - many rpi-image-gen deps aren't in Debian Bookworm
+RUN apt-get update && apt-get install -y \
+    # Essential build tools available in Bookworm
+    coreutils quilt parted debootstrap zerofree \
+    dosfstools libarchive-tools libcap2-bin rsync xz-utils file git curl bc \
+    gpg pigz xxd \
+    # Additional tools that are available
+    crudini pv util-linux \
+    # Python packages
+    python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+# Note: Some rpi-image-gen dependencies (bdebstrap, mmdebstrap, etc.) are not available
+# in Debian Bookworm. We'll need to modify our build approach to work without them
+# or fall back to a simpler image creation method.
+
+# Make build script executable
+RUN cd /rpi-image-gen && chmod +x build.sh
+
+# Check what dependencies are actually available
+RUN echo "=== Checking available dependencies ===" && \
     cd /rpi-image-gen && \
-    chmod +x build.sh install_deps.sh && \
-    ./install_deps.sh
+    ls -la && \
+    echo "=== Available commands ===" && \
+    which mmdebstrap || echo "mmdebstrap not available" && \
+    which bdebstrap || echo "bdebstrap not available" && \
+    which debootstrap || echo "debootstrap available" && \
+    echo "=== This build will need to use alternative methods ==="
 
 COPY . /workspace/
 

@@ -177,7 +177,7 @@ EOF
 
 # Main build function
 build_image() {
-    log "Starting Crankshaft build with official rpi-image-gen"
+    log "Starting Crankshaft build with rpi-image-gen"
     log "Configuration:"
     log "  Image: ${IMG_NAME}"
     log "  Architecture: ${TARGET_ARCH}"
@@ -191,6 +191,25 @@ build_image() {
         exit 1
     fi
     
+    # Check what build tools are available
+    cd /rpi-image-gen
+    
+    log "Checking available build tools..."
+    if command -v bdebstrap >/dev/null 2>&1 && command -v mmdebstrap >/dev/null 2>&1; then
+        log "Found modern rpi-image-gen tools (bdebstrap/mmdebstrap) - using new approach"
+        build_with_modern_tools
+    else
+        log "Modern tools not available - using fallback approach"
+        build_with_fallback
+    fi
+    
+    log "Build completed successfully!"
+}
+
+# Build using modern rpi-image-gen with bdebstrap/mmdebstrap
+build_with_modern_tools() {
+    log "Building with modern rpi-image-gen tools..."
+    
     # Set up rpi-image-gen components
     create_device_definition  # This just logs that we're using pi5
     create_profile            # Creates our custom profile
@@ -198,9 +217,6 @@ build_image() {
     
     # Create configuration file
     local config_file=$(create_config)
-    
-    # Change to rpi-image-gen directory
-    cd /rpi-image-gen
     
     # Check if build script exists
     if [ ! -f "./build.sh" ]; then
@@ -223,26 +239,168 @@ build_image() {
     
     # Post-process the image
     post_process_image
+}
+
+# Fallback build method using simpler approach
+build_with_fallback() {
+    log "Using fallback build method..."
+    log "Creating a simple Debian-based image using debootstrap..."
     
-    log "Build completed successfully!"
+    # Create a simple image using debootstrap directly
+    local work_subdir="${WORK_DIR}/simple-build"
+    local rootfs_dir="${work_subdir}/rootfs"
+    
+    mkdir -p "${work_subdir}"
+    
+    # Use debootstrap to create base system
+    log "Creating base system with debootstrap..."
+    
+    local debian_arch="${TARGET_ARCH}"
+    if [ "${TARGET_ARCH}" = "armhf" ]; then
+        debian_arch="armhf"
+    elif [ "${TARGET_ARCH}" = "arm64" ]; then
+        debian_arch="arm64"
+    fi
+    
+    # Create basic Debian system
+    debootstrap --arch="${debian_arch}" \
+        --include="systemd,udev,kmod,ifupdown,isc-dhcp-client,wpasupplicant,ssh,sudo,vim,nano" \
+        "${DEBIAN_RELEASE}" \
+        "${rootfs_dir}" \
+        http://deb.debian.org/debian/
+    
+    if [ $? -ne 0 ]; then
+        log "ERROR: debootstrap failed"
+        exit 1
+    fi
+    
+    # Basic system configuration
+    configure_fallback_system "${rootfs_dir}"
+    
+    # Create image file
+    create_simple_image "${work_subdir}" "${rootfs_dir}"
+    
+    log "Fallback build completed"
+}
+
+# Configure the fallback system
+configure_fallback_system() {
+    local rootfs_dir="$1"
+    
+    log "Configuring fallback system..."
+    
+    # Set hostname
+    echo "crankshaft-ng" > "${rootfs_dir}/etc/hostname"
+    
+    # Configure hosts file
+    cat > "${rootfs_dir}/etc/hosts" << EOF
+127.0.0.1       localhost
+127.0.1.1       crankshaft-ng
+EOF
+    
+    # Create user
+    chroot "${rootfs_dir}" /bin/bash -c "
+        useradd -m -s /bin/bash ${FIRST_USER_NAME}
+        echo '${FIRST_USER_NAME}:${FIRST_USER_PASS}' | chpasswd
+        usermod -aG sudo ${FIRST_USER_NAME}
+    "
+    
+    # Basic network configuration
+    cat > "${rootfs_dir}/etc/network/interfaces" << EOF
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet dhcp
+EOF
+    
+    # Add Crankshaft build info
+    echo "${IMG_DATE}" > "${rootfs_dir}/etc/crankshaft.date"
+    echo "${GIT_HASH}" > "${rootfs_dir}/etc/crankshaft.build"
+    echo "${GIT_BRANCH}" > "${rootfs_dir}/etc/crankshaft.branch"
+    echo "Built with fallback method" > "${rootfs_dir}/etc/crankshaft.builder"
+    
+    log "System configuration completed"
+}
+
+# Create a simple disk image
+create_simple_image() {
+    local work_dir="$1"
+    local rootfs_dir="$2"
+    
+    log "Creating disk image..."
+    
+    # Calculate required size (rootfs size + 20% + 200MB for boot)
+    local rootfs_size=$(du -sm "${rootfs_dir}" | cut -f1)
+    local image_size=$((rootfs_size + rootfs_size/5 + 200))
+    
+    log "Creating ${image_size}MB image..."
+    
+    local image_file="${work_dir}/crankshaft.img"
+    
+    # Create image file
+    dd if=/dev/zero of="${image_file}" bs=1M count="${image_size}"
+    
+    # Set up loop device
+    local loop_dev=$(losetup -f --show "${image_file}")
+    
+    # Create partition table
+    parted "${loop_dev}" mklabel msdos
+    parted "${loop_dev}" mkpart primary fat32 1MiB 201MiB
+    parted "${loop_dev}" mkpart primary ext4 201MiB 100%
+    parted "${loop_dev}" set 1 boot on
+    
+    # Update partition table
+    partprobe "${loop_dev}"
+    
+    # Format partitions
+    mkfs.vfat -F 32 -n boot "${loop_dev}p1"
+    mkfs.ext4 -L rootfs "${loop_dev}p2"
+    
+    # Mount and copy files
+    local mount_dir="${work_dir}/mnt"
+    mkdir -p "${mount_dir}"
+    
+    mount "${loop_dev}p2" "${mount_dir}"
+    cp -a "${rootfs_dir}"/* "${mount_dir}"/
+    
+    # Basic boot setup (minimal)
+    mkdir -p "${mount_dir}/boot"
+    mount "${loop_dev}p1" "${mount_dir}/boot"
+    
+    # Create basic fstab
+    cat > "${mount_dir}/etc/fstab" << EOF
+/dev/mmcblk0p2  /       ext4    defaults,noatime  0       1
+/dev/mmcblk0p1  /boot   vfat    defaults          0       2
+EOF
+    
+    # Cleanup
+    umount "${mount_dir}/boot"
+    umount "${mount_dir}"
+    losetup -d "${loop_dev}"
+    
+    # Copy to deploy directory
+    mkdir -p "${DEPLOY_DIR}"
+    cp "${image_file}" "${DEPLOY_DIR}/${IMG_NAME}-${IMG_DATE}.img"
+    
+    log "Simple image created: ${DEPLOY_DIR}/${IMG_NAME}-${IMG_DATE}.img"
 }
 
 # Post-process the generated image
 post_process_image() {
     log "Post-processing image..."
     
-    # Based on rpi-image-gen docs, images should be in work/<name>/artefacts/
+    # Look for images in multiple possible locations
     local output_base="${WORK_DIR}/output"
     local generated_image=""
     
     # First try the standard rpi-image-gen output structure
     if [ -d "${output_base}" ]; then
         log "Searching for images in output directory: ${output_base}"
-        # Look for the image in the artefacts subdirectory
         generated_image=$(find "${output_base}" -name "*.img" -type f | head -1)
     fi
     
-    # If not found in output, search broader
+    # If not found in output, search broader (including fallback locations)
     if [ -z "${generated_image}" ]; then
         log "No image found in ${output_base}, searching broader..."
         
@@ -257,6 +415,13 @@ post_process_image() {
                 fi
             fi
         done
+    fi
+    
+    # Check if we already have the final image in place (from fallback method)
+    local expected_final="${DEPLOY_DIR}/${IMG_NAME}-${IMG_DATE}.img"
+    if [ -f "${expected_final}" ] && [ -z "${generated_image}" ]; then
+        log "Final image already in place: ${expected_final}"
+        generated_image="${expected_final}"
     fi
     
     if [ -z "${generated_image}" ]; then
@@ -274,7 +439,7 @@ post_process_image() {
     
     log "Found generated image: ${generated_image}"
     
-    # Copy to deploy directory with proper name
+    # Copy to deploy directory with proper name if needed
     local final_image="${DEPLOY_DIR}/${IMG_NAME}-${IMG_DATE}.img"
     
     # Ensure deploy directory exists
@@ -286,12 +451,18 @@ post_process_image() {
         cp "${generated_image}" "${final_image}"
     fi
     
-    # Generate checksums
+    # Generate checksums only if we don't have them already
     cd "${DEPLOY_DIR}"
-    log "Generating checksums..."
-    md5sum "$(basename "${final_image}")" > "${IMG_NAME}-${IMG_DATE}.img.md5"
-    sha1sum "$(basename "${final_image}")" > "${IMG_NAME}-${IMG_DATE}.img.sha1"
-    sha256sum "$(basename "${final_image}")" > "${IMG_NAME}-${IMG_DATE}.img.sha256"
+    local base_name="$(basename "${final_image}")"
+    
+    if [ ! -f "${IMG_NAME}-${IMG_DATE}.img.md5" ]; then
+        log "Generating checksums..."
+        md5sum "${base_name}" > "${IMG_NAME}-${IMG_DATE}.img.md5"
+        sha1sum "${base_name}" > "${IMG_NAME}-${IMG_DATE}.img.sha1"
+        sha256sum "${base_name}" > "${IMG_NAME}-${IMG_DATE}.img.sha256"
+    else
+        log "Checksums already exist"
+    fi
     
     # Create ZIP if requested
     if [ "${DEPLOY_ZIP:-1}" = "1" ]; then
@@ -307,7 +478,7 @@ post_process_image() {
     log "Image post-processing completed"
     log "Final image: ${final_image}"
     log "Generated artifacts:"
-    ls -lh "${DEPLOY_DIR}/${IMG_NAME}-${IMG_DATE}."*
+    ls -lh "${DEPLOY_DIR}/${IMG_NAME}-${IMG_DATE}."* 2>/dev/null || echo "No artifacts found"
 }
 
 # Main execution
