@@ -79,4 +79,7 @@ chmod 644 files/usr/local/bin/usbreset.md5
 
 # qt5
 rm -rf files/qt5/Qt5_OpenGLES2.tar.xz
+# qt5 from prebuilts
+# NOTE: Qt5 binaries need to be compiled for arm64 architecture for Trixie builds
+# The current Qt_5151_OpenGLES2.tar.xz contains armhf binaries
 cat $BASE_DIR/prebuilts/qt5/Qt_5151_OpenGLES2.tar.xz* > files/qt5/Qt5_OpenGLES2.tar.xz

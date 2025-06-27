@@ -53,6 +53,13 @@ jobs:
         ]
         config:
           - {
+              name: "Debian Trixie arm64",
+              basefile: "updater/base_trixie_arm64",
+              arch: "arm64",
+              osname: "trixie",
+              ostype: "Debian"
+            }
+          - {
               name: "Debian Buster armhf",
               basefile: "updater/base_buster_armhf",
               arch: "armhf",

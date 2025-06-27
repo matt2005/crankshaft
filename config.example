@@ -8,3 +8,9 @@ ENABLE_SSH=0
 IMG_VERSION=v1-${IMG_NAME}
 IMG_FILENAME=${IMG_VERSION}
 ZIP_FILENAME=${IMG_VERSION}
+
+# Architecture and Distribution Settings
+# For Debian Trixie 64-bit (recommended):
+# TARGET_ARCH=arm64 (default for Trixie builds)
+# For legacy Debian Buster 32-bit:
+# TARGET_ARCH=armhf

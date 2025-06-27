@@ -158,7 +158,7 @@ install -m 644 files/usr/share/plymouth/themes/csnganimation/lock.png           
 install -m 644 files/usr/share/plymouth/themes/csnganimation/logo.png                 "${ROOTFS_DIR}/usr/share/plymouth/themes/csnganimation/"
 install -m 644 files/usr/share/plymouth/themes/csnganimation/progress_bar.png         "${ROOTFS_DIR}/usr/share/plymouth/themes/csnganimation/"
 install -m 644 files/usr/share/plymouth/themes/csnganimation/progress_box.png         "${ROOTFS_DIR}/usr/share/plymouth/themes/csnganimation/"
-install -m 644 files/usr/lib/arm-linux-gnueabihf/plymouth/csnganimation.so            "${ROOTFS_DIR}/usr/lib/arm-linux-gnueabihf/plymouth/"
+install -m 644 files/usr/lib/aarch64-linux-gnu/plymouth/csnganimation.so            "${ROOTFS_DIR}/usr/lib/aarch64-linux-gnu/plymouth/"
 install -d "${ROOTFS_DIR}/usr/share/plymouth/themes/custom"
 install -m 644 files/usr/share/plymouth/themes/custom/custom.plymouth       "${ROOTFS_DIR}/usr/share/plymouth/themes/custom/"
 install -m 644 files/usr/share/plymouth/themes/custom/custom.script         "${ROOTFS_DIR}/usr/share/plymouth/themes/custom/"
@@ -181,3 +181,6 @@ tar -xf files/qt5/Qt5_OpenGLES2.tar.xz -C ${ROOTFS_DIR}/
 
 #wiringpi
 install -m 755 files/wiringpi-latest.deb                               "${ROOTFS_DIR}/root/"
+
+# NOTE: These binaries need to be recompiled for arm64/aarch64 architecture
+# The existing armhf binaries will not work on arm64 systems

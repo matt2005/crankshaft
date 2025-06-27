@@ -1,4 +1,4 @@
-FROM --platform=linux/i386 debian:buster
+FROM --platform=linux/amd64 debian:trixie
 
 ENV DEBIAN_FRONTEND noninteractive
 
