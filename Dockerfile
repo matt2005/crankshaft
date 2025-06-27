@@ -16,8 +16,8 @@ RUN apt-get -y update && \
         sudo \
     && rm -rf /var/lib/apt/lists/*
 
-# Set up QEMU for cross-compilation
-RUN update-binfmts --enable
+# Note: QEMU/binfmt setup is handled by the host system in GitHub Actions
+# The qemu-user-static and binfmt-support packages are installed above
 
 # Install official Raspberry Pi rpi-image-gen
 RUN git clone --depth 1 https://github.com/raspberrypi/rpi-image-gen.git /rpi-image-gen && \

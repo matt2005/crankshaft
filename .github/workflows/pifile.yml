@@ -182,6 +182,28 @@ jobs:
         with:
           platforms: ${{ matrix.config.platforms }}
 
+      - name: "Setup additional QEMU and binfmt"
+        if: steps.arch_filter.outputs.skip != 'true'
+        run: |
+          # Set up QEMU with binfmt registration for cross-compilation
+          echo "Setting up QEMU and binfmt for cross-compilation..."
+          
+          # Register QEMU binfmt handlers
+          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+          
+          # Verify binfmt registration
+          echo "Verifying binfmt registration:"
+          ls -la /proc/sys/fs/binfmt_misc/ 2>/dev/null || echo "binfmt_misc not mounted"
+          
+          # Test architecture support
+          if [[ "${{ matrix.config.arch }}" == "arm64" ]]; then
+            echo "Testing ARM64 emulation:"
+            docker run --rm --platform=linux/arm64 arm64v8/alpine:latest uname -a || echo "ARM64 test failed"
+          elif [[ "${{ matrix.config.arch }}" == "armhf" ]]; then
+            echo "Testing ARMHF emulation:"
+            docker run --rm --platform=linux/arm/v7 arm32v7/alpine:latest uname -a || echo "ARMHF test failed"
+          fi
+
       - name: "Generate build information"
         if: steps.arch_filter.outputs.skip != 'true'
         id: build_info
@@ -274,18 +296,14 @@ jobs:
           echo "=== Docker Buildx Version ==="
           docker buildx version
           
-          # Test QEMU registration for cross-compilation
-          echo "=== Setting up QEMU ==="
-          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-          
-          # Test cross-platform capabilities
-          echo "=== Testing Cross-Platform Support ==="
+          # Verify QEMU is working (already set up in previous step)
+          echo "=== Verifying QEMU Setup ==="
           if [[ "${{ matrix.config.arch }}" == "arm64" ]]; then
-            echo "Testing ARM64 support..."
-            docker run --rm --platform=linux/arm64 arm64v8/alpine:latest uname -a || echo "ARM64 test failed"
+            echo "Verifying ARM64 support..."
+            docker run --rm --platform=linux/arm64 arm64v8/alpine:latest echo "ARM64 QEMU working" || echo "ARM64 test failed"
           elif [[ "${{ matrix.config.arch }}" == "armhf" ]]; then
-            echo "Testing ARMHF support..."
-            docker run --rm --platform=linux/arm/v7 arm32v7/alpine:latest uname -a || echo "ARMHF test failed"
+            echo "Verifying ARMHF support..."
+            docker run --rm --platform=linux/arm/v7 arm32v7/alpine:latest echo "ARMHF QEMU working" || echo "ARMHF test failed"
           fi
           
           # Check available build scripts
@@ -325,7 +343,7 @@ jobs:
           echo "Dockerfile contents:"
           cat Dockerfile
           echo "=== Building Docker image ==="
-          if ! docker build -t crankshaft-rpi-image-gen .; then
+          if ! docker build --no-cache -t crankshaft-rpi-image-gen .; then
             echo "ERROR: Docker build failed"
             echo "Docker info:"
             docker info
@@ -335,6 +353,8 @@ jobs:
             docker system df
             echo "Available space:"
             df -h
+            echo "Docker build logs (last 100 lines):"
+            docker build --no-cache -t crankshaft-rpi-image-gen . 2>&1 | tail -100 || true
             exit 1
           fi
           
