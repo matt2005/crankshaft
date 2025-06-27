@@ -25,7 +25,7 @@ RUN git clone --depth 1 https://github.com/raspberrypi/rpi-image-gen.git /rpi-im
 # Install dependencies manually - many rpi-image-gen deps aren't in Debian Bookworm
 RUN apt-get update && apt-get install -y \
     # Essential build tools available in Bookworm
-    coreutils quilt parted debootstrap zerofree \
+    coreutils quilt parted debootstrap bdebstrap mmdebstrap zerofree \
     dosfstools libarchive-tools libcap2-bin rsync xz-utils file git curl bc \
     gpg pigz xxd \
     # Additional tools that are available
