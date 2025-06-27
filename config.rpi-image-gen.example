@@ -1,0 +1,79 @@
+# Crankshaft Configuration for rpi-image-gen Build System
+# Copy this file to 'config' and customize as needed
+
+# Basic Image Configuration
+IMG_NAME='crankshaft-ng'
+IMG_VERSION='v1-${IMG_NAME}'
+IMG_FILENAME='${IMG_DATE}-${IMG_NAME}'
+ZIP_FILENAME='${IMG_FILENAME}'
+
+# Target Platform Configuration
+TARGET_ARCH='arm64'              # arm64 (recommended) or armhf (legacy)
+DEBIAN_RELEASE='trixie'          # trixie (recommended) or bookworm
+
+# Build Configuration
+DEPLOY_ZIP=1                     # Create ZIP archive: 1=yes, 0=no
+CONTINUE=0                       # Continue interrupted build: 1=yes, 0=no
+
+# User Configuration
+FIRST_USER_NAME='pi'
+FIRST_USER_PASS='raspberry'
+ENABLE_SSH=0                     # Enable SSH: 1=yes, 0=no
+
+# Localization
+TIMEZONE_DEFAULT='Europe/London'
+LOCALE_DEFAULT='en_GB.UTF-8'
+KEYBOARD_KEYMAP='gb'
+KEYBOARD_LAYOUT='English (UK)'
+
+# WiFi Configuration (optional)
+WPA_ESSID=''                     # WiFi network name
+WPA_PASSWORD=''                  # WiFi password
+WPA_COUNTRY='GB'                 # WiFi country code
+
+# Crankshaft Specific Configuration
+ENABLE_HOTSPOT=1                 # Enable WiFi hotspot: 1=yes, 0=no
+ENABLE_BLUETOOTH=1               # Enable Bluetooth: 1=yes, 0=no
+ENABLE_CAMERA=1                  # Enable camera support: 1=yes, 0=no
+
+# Hardware Configuration
+ENABLE_GPIO=1                    # Enable GPIO support: 1=yes, 0=no
+ENABLE_I2C=1                     # Enable I2C: 1=yes, 0=no
+ENABLE_SPI=1                     # Enable SPI: 1=yes, 0=no
+
+# Performance Settings
+GPU_MEM=128                      # GPU memory split (MB)
+HDMI_FORCE_HOTPLUG=1            # Force HDMI hotplug: 1=yes, 0=no
+
+# Audio Configuration
+ENABLE_PULSEAUDIO=1             # Enable PulseAudio: 1=yes, 0=no
+AUDIO_OUTPUT='auto'              # auto, hdmi, analog, both
+
+# Android Auto Configuration
+AUTOAPP_ENABLED=1               # Enable Android Auto: 1=yes, 0=no
+OPENAUTO_VERSION='latest'       # OpenAuto version
+
+# Development Settings
+DEBUG_MODE=0                    # Enable debug mode: 1=yes, 0=no
+ENABLE_UART=0                   # Enable UART console: 1=yes, 0=no
+
+# Custom Repository Settings (optional)
+# CUSTOM_APT_REPO=''            # Additional APT repository
+# CUSTOM_APT_KEY=''             # GPG key for custom repository
+
+# Advanced Build Options
+# QEMU_USE_STATIC=1             # Use static QEMU: 1=yes, 0=no (auto-detected)
+# PARALLEL_JOBS=4               # Number of parallel build jobs
+
+# Prebuilt Binary Configuration
+# Set to 1 to download precompiled binaries (faster build)
+# Set to 0 to compile from source (slower but customizable)
+USE_PREBUILT_BINARIES=1
+
+# Custom Build Scripts (optional)
+# PRE_BUILD_SCRIPT=''           # Script to run before build
+# POST_BUILD_SCRIPT=''          # Script to run after build
+
+# Container Configuration
+CONTAINER_NAME='crankshaft-builder'
+PRESERVE_CONTAINER=0            # Keep container after build: 1=yes, 0=no

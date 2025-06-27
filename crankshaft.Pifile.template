@@ -1,0 +1,213 @@
+# Crankshaft Pifile Template for rpi-image-gen
+# This file demonstrates the modular approach to building Crankshaft images
+
+# Base image selection based on architecture
+# For ARM64 (recommended for Pi 4/5)
+FROM https://downloads.raspberrypi.org/raspios_lite_arm64/images/raspios_lite_arm64-2023-12-11/2023-12-05-raspios-bookworm-arm64-lite.zip
+
+# For ARMHF (legacy Pi models) - uncomment and comment above if needed
+# FROM https://downloads.raspberrypi.org/raspios_lite_armhf/images/raspios_lite_armhf-2023-12-11/2023-12-05-raspios-bookworm-armhf-lite.zip
+
+# Expand filesystem for Crankshaft installation (minimum 2GB needed)
+PUMP 2500M
+
+# ============================================================================
+# STAGE 0: APT Sources and Base System Update
+# ============================================================================
+
+# Update APT sources for Debian Trixie
+TO /etc/apt/sources.list
+deb http://deb.debian.org/debian/ trixie main contrib non-free non-free-firmware
+deb http://security.debian.org/debian-security trixie-security main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian/ trixie-updates main contrib non-free non-free-firmware
+
+TO /etc/apt/sources.list.d/raspi.list
+deb http://archive.raspberrypi.org/debian/ bookworm main
+
+# Update package lists and upgrade system
+RUN apt-get update && apt-get -y dist-upgrade
+
+# Install firmware packages for Trixie
+RUN apt-get install -y firmware-linux firmware-linux-nonfree
+
+# ============================================================================
+# STAGE 1: Boot Configuration
+# ============================================================================
+
+# Configure boot parameters
+TO /boot/config.txt
+# Crankshaft boot configuration
+dtparam=audio=on
+dtparam=spi=on
+dtparam=i2c_arm=on
+gpu_mem=128
+disable_overscan=1
+hdmi_force_hotplug=1
+hdmi_drive=2
+
+# Pi 4/5 specific settings
+[pi4]
+dtoverlay=vc4-fkms-v3d
+max_framebuffers=2
+
+[all]
+
+# Configure kernel command line
+TO /boot/cmdline.txt
+console=serial0,115200 console=tty1 root=PARTUUID=ROOTDEV-02 rootfstype=ext4 elevator=deadline fsck.repair=yes rootwait logo.nologo loglevel=0 vt.global_cursor_default=0 splash plymouth.ignore-serial-consoles
+
+# ============================================================================
+# STAGE 2: System Packages and Configuration
+# ============================================================================
+
+# Install essential system packages
+RUN apt-get install -y \
+    systemd-timesyncd systemd-resolved \
+    bluetooth bluez bluez-tools \
+    pulseaudio pulseaudio-module-bluetooth \
+    hostapd dnsmasq \
+    triggerhappy \
+    plymouth plymouth-themes \
+    git curl wget unzip \
+    python3-dev python3-pip \
+    build-essential cmake \
+    libprotobuf-dev protobuf-compiler \
+    libopenssl-dev libusb-1.0-0-dev \
+    libboost-all-dev \
+    qtbase5-dev qtdeclarative5-dev qtmultimedia5-dev \
+    qml-module-qtquick2 qml-module-qtquick-controls \
+    qml-module-qtquick-controls2 qml-module-qtquick-layouts
+
+# Install additional multimedia and hardware support
+RUN apt-get install -y \
+    gstreamer1.0-tools gstreamer1.0-plugins-base \
+    gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+    gstreamer1.0-plugins-ugly gstreamer1.0-libav \
+    v4l-utils uvcdynctrl \
+    alsa-utils
+
+# Configure user and permissions
+RUN useradd -m -G audio,video,input,dialout,plugdev,netdev,bluetooth,pulse-access pi || true
+RUN echo "pi:raspberry" | chpasswd
+
+# Configure system settings
+RUN echo "Europe/London" > /etc/timezone && dpkg-reconfigure -f noninteractive tzdata
+RUN locale-gen en_GB.UTF-8
+RUN update-locale LANG=en_GB.UTF-8
+
+# Set hostname
+RUN echo "CRANKSHAFT-NG" > /etc/hostname
+RUN sed -i 's/raspberrypi/CRANKSHAFT-NG/g' /etc/hosts
+
+# ============================================================================
+# STAGE 3: Crankshaft Installation
+# ============================================================================
+
+# Create crankshaft directories
+RUN mkdir -p /opt/crankshaft /boot/crankshaft /boot/crankshaft/custom
+
+# Install systemd services
+TO /etc/systemd/system/crankshaft.service
+[Unit]
+Description=Crankshaft Main Service
+After=multi-user.target network.target
+
+[Service]
+Type=forking
+ExecStart=/opt/crankshaft/service_crankshaft.sh
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
+
+TO /etc/systemd/system/openauto.service
+[Unit]
+Description=OpenAuto Service
+After=multi-user.target network.target bluetooth.service pulseaudio.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/autoapp
+Restart=always
+User=pi
+Environment=DISPLAY=:0
+
+[Install]
+WantedBy=multi-user.target
+
+# Enable services
+RUN systemctl enable crankshaft.service
+RUN systemctl enable openauto.service
+RUN systemctl enable systemd-resolved
+RUN systemctl enable systemd-timesyncd
+
+# Configure PulseAudio
+RUN usermod -a -G pulse,pulse-access pi
+
+# ============================================================================
+# STAGE 4: Architecture-Specific Configuration
+# ============================================================================
+
+# ARM64 specific library links (for Trixie arm64 builds)
+RUN ln -sf /opt/vc/lib/libbrcmEGL.so /usr/lib/aarch64-linux-gnu/libEGL.so 2>/dev/null || true
+RUN ln -sf /opt/vc/lib/libbrcmGLESv2.so /usr/lib/aarch64-linux-gnu/libGLESv2.so 2>/dev/null || true
+RUN ln -sf /opt/vc/lib/libbrcmOpenVG.so /usr/lib/aarch64-linux-gnu/libOpenVG.so 2>/dev/null || true
+RUN ln -sf /opt/vc/lib/libbrcmWFC.so /usr/lib/aarch64-linux-gnu/libWFC.so 2>/dev/null || true
+
+# For ARMHF builds, use these instead:
+# RUN ln -sf /opt/vc/lib/libbrcmEGL.so /usr/lib/arm-linux-gnueabihf/libEGL.so 2>/dev/null || true
+# RUN ln -sf /opt/vc/lib/libbrcmGLESv2.so /usr/lib/arm-linux-gnueabihf/libGLESv2.so 2>/dev/null || true
+# RUN ln -sf /opt/vc/lib/libbrcmOpenVG.so /usr/lib/arm-linux-gnueabihf/libOpenVG.so 2>/dev/null || true
+# RUN ln -sf /opt/vc/lib/libbrcmWFC.so /usr/lib/arm-linux-gnueabihf/libWFC.so 2>/dev/null || true
+
+# ============================================================================
+# STAGE 5: Final System Configuration and Cleanup
+# ============================================================================
+
+# Configure networking
+TO /etc/systemd/network/wlan0.network
+[Match]
+Name=wlan0
+
+[Network]
+DHCP=yes
+
+# Configure hostapd for hotspot functionality
+TO /etc/hostapd/hostapd.conf
+interface=wlan0
+driver=nl80211
+ssid=Crankshaft-NG
+hw_mode=g
+channel=7
+wmm_enabled=0
+macaddr_acl=0
+auth_algs=1
+ignore_broadcast_ssid=0
+wpa=2
+wpa_passphrase=1234567890
+wpa_key_mgmt=WPA-PSK
+wpa_pairwise=TKIP
+rsn_pairwise=CCMP
+
+# Build information
+RUN echo "$(date +%Y-%m-%d)" > /etc/crankshaft.date
+RUN echo "rpi-image-gen-build" > /etc/crankshaft.build
+RUN echo "main" > /etc/crankshaft.branch
+
+# Final cleanup
+RUN apt-get autoremove -y
+RUN apt-get autoclean
+RUN rm -rf /var/lib/apt/lists/*
+RUN rm -rf /tmp/*
+RUN rm -rf /var/tmp/*
+
+# Set final permissions
+RUN chown -R pi:pi /home/pi
+RUN chmod -R 755 /opt/crankshaft
+
+# Configure Plymouth for boot splash
+RUN plymouth-set-default-theme spinner
+
+# NOTE: Precompiled binaries for autoapp, btservice, etc. need to be 
+# installed separately for the target architecture (arm64 or armhf)
