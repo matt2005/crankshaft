@@ -92,7 +92,7 @@ fi
 
 # Build the Docker image
 echo "Building Docker image..."
-if ! ${DOCKER} build --platform linux/amd64 -t crankshaft-rpi-image-gen "${DIR}"; then
+if ! ${DOCKER} build -t crankshaft-rpi-image-gen "${DIR}"; then
 	echo "ERROR: Failed to build Docker image"
 	exit 1
 fi
@@ -135,7 +135,24 @@ else
 	DOCKER_ARGS="--rm --privileged"
 fi
 
-${DOCKER} run ${DOCKER_ARGS} \
+# Add additional debugging
+echo "Docker command that will be executed:"
+echo "${DOCKER} run ${DOCKER_ARGS} \\"
+echo "  --name \"${CONTAINER_NAME}\" \\"
+echo "  ${VOLUME_MOUNTS} \\"
+echo "  --volume \"${DIR}/work\":/workspace/work \\"
+echo "  --volume \"${DIR}/deploy\":/workspace/deploy \\"
+echo "  -e \"TARGET_ARCH=${TARGET_ARCH}\" \\"
+echo "  -e \"DEBIAN_RELEASE=${DEBIAN_RELEASE}\" \\"
+echo "  -e \"IMG_NAME=${IMG_NAME:-crankshaft-ng}\" \\"
+echo "  -e \"GIT_HASH=${GIT_HASH}\" \\"
+echo "  -e \"GIT_BRANCH=${GIT_BRANCH}\" \\"
+echo "  -e \"VERBOSE=${VERBOSE:-0}\" \\"
+echo "  crankshaft-rpi-image-gen \\"
+echo "  /workspace/build-rpi-image-gen.sh"
+echo ""
+
+if ! ${DOCKER} run ${DOCKER_ARGS} \
 	--name "${CONTAINER_NAME}" \
 	${VOLUME_MOUNTS} \
 	--volume "${DIR}/work":/workspace/work \
@@ -147,7 +164,13 @@ ${DOCKER} run ${DOCKER_ARGS} \
 	-e "GIT_BRANCH=${GIT_BRANCH}" \
 	-e "VERBOSE=${VERBOSE:-0}" \
 	crankshaft-rpi-image-gen \
-	/workspace/build-rpi-image-gen.sh
+	/workspace/build-rpi-image-gen.sh; then
+	
+	echo "ERROR: Container execution failed"
+	echo "Checking container logs..."
+	${DOCKER} logs "${CONTAINER_NAME}" 2>/dev/null || echo "No container logs available"
+	exit 1
+fi
 
 echo ""
 echo "Build completed!"

@@ -36,7 +36,6 @@ FIRST_USER_PASS="${FIRST_USER_PASS:-raspberry}"
 ENABLE_SSH="${ENABLE_SSH:-0}"
 TIMEZONE_DEFAULT="${TIMEZONE_DEFAULT:-Europe/London}"
 LOCALE_DEFAULT="${LOCALE_DEFAULT:-en_GB.UTF-8}"
-export KEYBOARD_KEYMAP="${KEYBOARD_KEYMAP:-gb}"
 KEYBOARD_KEYMAP="${KEYBOARD_KEYMAP:-gb}"
 KEYBOARD_LAYOUT="${KEYBOARD_LAYOUT:-English (UK)}"
 
@@ -49,66 +48,46 @@ log() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
 }
 
-# Create rpi-image-gen configuration
-create_rpi_image_gen_config() {
+# Create a minimal rpi-image-gen configuration for Crankshaft
+create_config() {
     local config_file="${WORK_DIR}/crankshaft.cfg"
     
     log "Creating rpi-image-gen config: ${config_file}"
+    
+    # Choose appropriate device class based on architecture
+    local device_class="pi5"  # Default for arm64
+    if [ "${TARGET_ARCH}" = "armhf" ]; then
+        device_class="pi4"  # Use pi4 for armhf builds
+    fi
     
     cat > "${config_file}" << EOF
 # Crankshaft configuration for rpi-image-gen
 # Generated on $(date)
 
-[device]
-class=crankshaft-${TARGET_ARCH}
-profile=crankshaft
-
 [image]
-layout=default
+layout=mbr/simple_dual
+boot_part_size=200%
+root_part_size=300%
 name=${IMG_NAME}
-version=${IMG_DATE}
+
+[device]
+class=${device_class}
+profile=crankshaft
 
 [sys]
 outputdir=${WORK_DIR}/output
 deploydir=${DEPLOY_DIR}
 EOF
+
+    echo "${config_file}"
 }
 
-# Create custom device definition for Crankshaft
+# Create minimal device definition (not needed since we'll use pi5)
 create_device_definition() {
-    local device_dir="/rpi-image-gen/device/crankshaft-${TARGET_ARCH}"
-    
-    log "Creating device definition: ${device_dir}"
-    mkdir -p "${device_dir}"
-    
-    # Create device build defaults
-    cat > "${device_dir}/build.defaults" << EOF
-# Crankshaft ${TARGET_ARCH} device configuration
-class=crankshaft-${TARGET_ARCH}
-profile=crankshaft
-EOF
-
-    # Create device-specific rootfs overlay
-    mkdir -p "${device_dir}/device/rootfs-overlay"
-    
-    # Copy Crankshaft files to device overlay
-    if [ -d "${DIR}/stage3/03-crankshaft-base/files" ]; then
-        log "Copying Crankshaft base files"
-        cp -r "${DIR}/stage3/03-crankshaft-base/files/"* "${device_dir}/device/rootfs-overlay/" 2>/dev/null || true
-    fi
-    
-    if [ -d "${DIR}/stage3/04-crankshaft-bluetooth/files" ]; then
-        log "Copying Crankshaft bluetooth files"  
-        cp -r "${DIR}/stage3/04-crankshaft-bluetooth/files/"* "${device_dir}/device/rootfs-overlay/" 2>/dev/null || true
-    fi
-    
-    if [ -d "${DIR}/stage3/05-crankshaft-x11/files" ]; then
-        log "Copying Crankshaft X11 files"
-        cp -r "${DIR}/stage3/05-crankshaft-x11/files/"* "${device_dir}/device/rootfs-overlay/" 2>/dev/null || true
-    fi
+    log "Using existing pi5 device class - no custom device definition needed"
 }
 
-# Create Crankshaft profile for rpi-image-gen
+# Create profile for Crankshaft based on existing minimal profile
 create_profile() {
     local profile_dir="/rpi-image-gen/profile"
     local profile_file="${profile_dir}/crankshaft"
@@ -116,114 +95,82 @@ create_profile() {
     log "Creating Crankshaft profile: ${profile_file}"
     mkdir -p "${profile_dir}"
     
+    # Determine the correct base layer and kernel package based on architecture
+    local base_layer=""
+    local kernel_package=""
+    
+    if [ "${TARGET_ARCH}" = "armhf" ]; then
+        base_layer="raspbian/bookworm/base-apt"
+        kernel_package="linux-image-v7l"
+    else
+        base_layer="debian/bookworm/arm64/base-apt"
+        kernel_package="linux-image-v8"
+    fi
+    
+    # Create profile based on the existing minimal system with our additions
     cat > "${profile_file}" << EOF
-# Crankshaft profile for rpi-image-gen
-# This defines the layers to include in the build
+# Crankshaft profile based on bookworm minimal system
+# Contains minimal system + Crankshaft additions
 
-# Base Debian system
-base/${DEBIAN_RELEASE}-${TARGET_ARCH}
+# Base system
+${base_layer}
+rpi/debian/bookworm/apt
+rpi/misc-utils
+rpi/base/essential
+rpi/boot-firmware
+rpi/${TARGET_ARCH}/${kernel_package}
+rpi/user-credentials
+rpi/misc-skel
+sys-apps/systemd-net-min
+sys-apps/fake-hwclock
 
-# Essential packages
+# Crankshaft additions
 crankshaft/base
-crankshaft/multimedia
-crankshaft/bluetooth
-crankshaft/services
 EOF
 }
 
-# Create Crankshaft YAML layers
-create_yaml_layers() {
+# Create minimal YAML layer for Crankshaft
+create_yaml_layer() {
     local meta_dir="/rpi-image-gen/meta/crankshaft"
     
-    log "Creating Crankshaft YAML layers in ${meta_dir}"
+    log "Creating Crankshaft YAML layer in ${meta_dir}"
     mkdir -p "${meta_dir}"
     
-    # Base layer
+    # Base layer with Crankshaft-specific packages and configuration
     cat > "${meta_dir}/base.yaml" << EOF
 ---
 name: crankshaft-base
 mmdebstrap:
   packages:
-    - systemd-timesyncd
-    - systemd-resolved
-    - git
-    - curl
-    - wget
-    - unzip
-    - python3
-    - python3-pip
-  customize-hook: |
-    chroot \$1 bash << 'EOCHROOT'
-    # Create crankshaft user
-    useradd -m -G audio,video,input,dialout,plugdev,netdev ${FIRST_USER_NAME} || true
-    echo "${FIRST_USER_NAME}:${FIRST_USER_PASS}" | chpasswd
-    
-    # Set timezone and locale
-    echo "${TIMEZONE_DEFAULT}" > /etc/timezone
-    dpkg-reconfigure -f noninteractive tzdata
-    locale-gen ${LOCALE_DEFAULT}
-    update-locale LANG=${LOCALE_DEFAULT}
-    
-    # Set hostname
-    echo "CRANKSHAFT-NG" > /etc/hostname
-    sed -i 's/raspberrypi/CRANKSHAFT-NG/g' /etc/hosts
-    EOCHROOT
-EOF
-
-    # Multimedia layer
-    cat > "${meta_dir}/multimedia.yaml" << EOF
----
-name: crankshaft-multimedia
-mmdebstrap:
-  packages:
-    - qtbase5-dev
-    - qtdeclarative5-dev
-    - qtmultimedia5-dev
-    - qml-module-qtquick2
-    - qml-module-qtquick-controls
-    - qml-module-qtquick-controls2
-    - qml-module-qtquick-layouts
-    - gstreamer1.0-plugins-base
-    - gstreamer1.0-plugins-good
-    - gstreamer1.0-plugins-bad
-    - gstreamer1.0-plugins-ugly
-    - gstreamer1.0-libav
-EOF
-
-    # Bluetooth layer  
-    cat > "${meta_dir}/bluetooth.yaml" << EOF
----
-name: crankshaft-bluetooth
-mmdebstrap:
-  packages:
+    # Additional packages for Crankshaft
+    - python3-dev
+    - python3-setuptools
+    - python3-wheel
+    - pkg-config
+    - cmake
     - bluetooth
     - bluez
-    - bluez-tools
     - pulseaudio
-    - pulseaudio-module-bluetooth
+    - alsa-utils
   customize-hook: |
     chroot \$1 bash << 'EOCHROOT'
-    usermod -a -G bluetooth,pulse-access ${FIRST_USER_NAME}
-    EOCHROOT
-EOF
-
-    # Services layer
-    cat > "${meta_dir}/services.yaml" << EOF
----
-name: crankshaft-services
-mmdebstrap:
-  customize-hook: |
-    chroot \$1 bash << 'EOCHROOT'
-    # Enable essential services
-    systemctl enable systemd-resolved
-    systemctl enable systemd-timesyncd
-    systemctl enable bluetooth
-    systemctl enable pulseaudio
+    # Set hostname to Crankshaft
+    echo "CRANKSHAFT-NG" > /etc/hostname
+    sed -i 's/\bdebian\b/CRANKSHAFT-NG/g' /etc/hosts
     
-    # Build information
+    # Enable bluetooth service
+    systemctl enable bluetooth
+    
+    # Create Crankshaft build info
     echo "${IMG_DATE}" > /etc/crankshaft.date
     echo "${GIT_HASH}" > /etc/crankshaft.build
     echo "${GIT_BRANCH}" > /etc/crankshaft.branch
+    echo "Built with rpi-image-gen" > /etc/crankshaft.builder
+    
+    # Add user to audio/bluetooth groups (user already created by rpi/user-credentials)
+    if id "${FIRST_USER_NAME}" >/dev/null 2>&1; then
+        usermod -a -G audio,bluetooth ${FIRST_USER_NAME}
+    fi
     EOCHROOT
 EOF
 }
@@ -238,16 +185,41 @@ build_image() {
     log "  Git Hash: ${GIT_HASH}"
     log "  Git Branch: ${GIT_BRANCH}"
     
-    # Set up rpi-image-gen components
-    create_rpi_image_gen_config
-    create_device_definition
-    create_profile
-    create_yaml_layers
+    # Check if rpi-image-gen is available
+    if [ ! -d "/rpi-image-gen" ]; then
+        log "ERROR: rpi-image-gen not found at /rpi-image-gen"
+        exit 1
+    fi
     
-    # Run rpi-image-gen build
-    log "Executing rpi-image-gen build..."
+    # Set up rpi-image-gen components
+    create_device_definition  # This just logs that we're using pi5
+    create_profile            # Creates our custom profile
+    create_yaml_layer         # Creates our Crankshaft layer
+    
+    # Create configuration file
+    local config_file=$(create_config)
+    
+    # Change to rpi-image-gen directory
     cd /rpi-image-gen
-    ./build.sh -c "${WORK_DIR}/crankshaft.cfg"
+    
+    # Check if build script exists
+    if [ ! -f "./build.sh" ]; then
+        log "ERROR: rpi-image-gen build.sh not found"
+        exit 1
+    fi
+    
+    chmod +x ./build.sh
+    
+    log "Contents of rpi-image-gen directory:"
+    ls -la
+    
+    # Run the build
+    log "Executing rpi-image-gen build..."
+    if [ "${VERBOSE:-0}" = "1" ]; then
+        ./build.sh -c "${config_file}" -v
+    else
+        ./build.sh -c "${config_file}"
+    fi
     
     # Post-process the image
     post_process_image
@@ -259,12 +231,44 @@ build_image() {
 post_process_image() {
     log "Post-processing image..."
     
-    # Find the generated image in rpi-image-gen output
-    local output_dir="${WORK_DIR}/output"
-    local generated_image=$(find "${output_dir}" -name "*.img" | head -1)
+    # Based on rpi-image-gen docs, images should be in work/<name>/artefacts/
+    local output_base="${WORK_DIR}/output"
+    local generated_image=""
+    
+    # First try the standard rpi-image-gen output structure
+    if [ -d "${output_base}" ]; then
+        log "Searching for images in output directory: ${output_base}"
+        # Look for the image in the artefacts subdirectory
+        generated_image=$(find "${output_base}" -name "*.img" -type f | head -1)
+    fi
+    
+    # If not found in output, search broader
+    if [ -z "${generated_image}" ]; then
+        log "No image found in ${output_base}, searching broader..."
+        
+        # Check all possible locations
+        for search_dir in "${DEPLOY_DIR}" "${WORK_DIR}" "/rpi-image-gen/work" "/rpi-image-gen/deploy" .; do
+            if [ -d "${search_dir}" ]; then
+                log "Searching: ${search_dir}"
+                found_image=$(find "${search_dir}" -name "*.img" -type f | head -1)
+                if [ -n "${found_image}" ]; then
+                    generated_image="${found_image}"
+                    break
+                fi
+            fi
+        done
+    fi
     
     if [ -z "${generated_image}" ]; then
-        log "ERROR: No generated image found in ${output_dir}"
+        log "ERROR: No generated image found"
+        log "Output directory structure:"
+        if [ -d "${output_base}" ]; then
+            find "${output_base}" -type f | head -20
+        else
+            echo "Output directory ${output_base} does not exist"
+        fi
+        log "Available .img and .zip files:"
+        find . -name "*.img" -o -name "*.zip" 2>/dev/null | head -20 || true
         exit 1
     fi
     
@@ -272,10 +276,19 @@ post_process_image() {
     
     # Copy to deploy directory with proper name
     local final_image="${DEPLOY_DIR}/${IMG_NAME}-${IMG_DATE}.img"
-    cp "${generated_image}" "${final_image}"
+    
+    # Ensure deploy directory exists
+    mkdir -p "${DEPLOY_DIR}"
+    
+    # Copy image if it's not already in the right place
+    if [ "${generated_image}" != "${final_image}" ]; then
+        log "Copying image to final location: ${final_image}"
+        cp "${generated_image}" "${final_image}"
+    fi
     
     # Generate checksums
     cd "${DEPLOY_DIR}"
+    log "Generating checksums..."
     md5sum "$(basename "${final_image}")" > "${IMG_NAME}-${IMG_DATE}.img.md5"
     sha1sum "$(basename "${final_image}")" > "${IMG_NAME}-${IMG_DATE}.img.sha1"
     sha256sum "$(basename "${final_image}")" > "${IMG_NAME}-${IMG_DATE}.img.sha256"
@@ -290,8 +303,11 @@ post_process_image() {
             "${IMG_NAME}-${IMG_DATE}.img.sha256"
     fi
     
+    # Display final results
     log "Image post-processing completed"
     log "Final image: ${final_image}"
+    log "Generated artifacts:"
+    ls -lh "${DEPLOY_DIR}/${IMG_NAME}-${IMG_DATE}."*
 }
 
 # Main execution

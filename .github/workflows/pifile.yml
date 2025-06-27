@@ -320,11 +320,65 @@ jobs:
           
           chmod +x ./build-docker-rpi-image-gen.sh
           
+          # Test Docker build first with detailed output
+          echo "=== Testing Docker build ==="
+          echo "Dockerfile contents:"
+          cat Dockerfile
+          echo "=== Building Docker image ==="
+          if ! docker build -t crankshaft-rpi-image-gen .; then
+            echo "ERROR: Docker build failed"
+            echo "Docker info:"
+            docker info
+            echo "Docker version:"
+            docker version
+            echo "Docker system df:"
+            docker system df
+            echo "Available space:"
+            df -h
+            exit 1
+          fi
+          
+          echo "=== Docker build successful ==="
+          docker images crankshaft-rpi-image-gen
+          
+          # Test container startup
+          echo "=== Testing container startup ==="
+          if ! docker run --rm crankshaft-rpi-image-gen echo "Container test successful"; then
+            echo "ERROR: Container startup test failed"
+            exit 1
+          fi
+          
+          echo "=== Starting actual build ==="
+          
           # Run the build using our Docker wrapper script
-          ./build-docker-rpi-image-gen.sh \
+          if ! ./build-docker-rpi-image-gen.sh \
             -a "${{ matrix.config.arch }}" \
             -r "${{ matrix.config.osname }}" \
-            -v
+            -v; then
+            echo "ERROR: Build script failed"
+            echo "=== Checking for container logs ==="
+            docker ps -a | grep crankshaft || echo "No containers found"
+            exit 1
+          fi
+            
+          # Check if build produced any output
+          echo "=== Checking build output ==="
+          if [ -d "deploy" ]; then
+            echo "Deploy directory contents:"
+            ls -la deploy/
+          else
+            echo "No deploy directory found"
+          fi
+          
+          if [ -d "work" ]; then
+            echo "Work directory contents:"
+            find work -type f | head -20
+          else
+            echo "No work directory found"
+          fi
+          
+          echo "=== All files in current directory ==="
+          find . -name "*.img" -o -name "*.zip" | head -10
         timeout-minutes: 120
         env:
           DOCKER_BUILDKIT: 1
