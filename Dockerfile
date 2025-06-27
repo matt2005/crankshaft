@@ -38,6 +38,11 @@ RUN apt-get update && apt-get install -y \
 # in Debian Bookworm. We'll need to modify our build approach to work without them
 # or fall back to a simpler image creation method.
 
+# Install Dependencies for rpi-image-gen
+RUN cd /rpi-image-gen && \
+    chmod +x install_deps.sh && \
+    ./install_deps.sh || echo "install_deps.sh failed, continuing with available tools"
+
 # Make build script executable
 RUN cd /rpi-image-gen && chmod +x build.sh
 
