@@ -61,7 +61,7 @@ permissions:
 jobs:
   version:
     name: "Generate version info"
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     outputs:
       version: ${{ steps.get_version.outputs.version }}
       buildname: ${{ steps.get_version.outputs.buildname }}
@@ -110,7 +110,7 @@ jobs:
           echo "Build name: ${buildname}"
   build:
     name: "Build ${{ matrix.config.name }}"
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     needs: [version]
     timeout-minutes: 180
     strategy:
@@ -134,8 +134,8 @@ jobs:
             }
     
     outputs:
-      artifact-name: ${{ steps.build_info.outputs.artifact_name }}
-      image-file: ${{ steps.build_info.outputs.image_file }}
+      artifact-name: ${{ steps.build_info.outputs.artifact_name || steps.skip_outputs.outputs.artifact_name }}
+      image-file: ${{ steps.build_info.outputs.image_file || steps.skip_outputs.outputs.image_file }}
     
     steps:
       - name: "Check architecture filter"
@@ -155,6 +155,14 @@ jobs:
             echo "Building $CURRENT_ARCH"
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
+
+      - name: "Set skip outputs"
+        if: steps.arch_filter.outputs.skip == 'true'
+        id: skip_outputs
+        run: |
+          echo "Architecture ${{ matrix.config.arch }} was skipped"
+          echo "artifact_name=skipped-${{ matrix.config.arch }}" >> $GITHUB_OUTPUT
+          echo "image_file=skipped-${{ matrix.config.arch }}.img" >> $GITHUB_OUTPUT
 
       - name: "Checkout repository"
         if: steps.arch_filter.outputs.skip != 'true'
@@ -211,7 +219,9 @@ jobs:
             qemu-user-static \
             binfmt-support \
             debootstrap \
-            systemd-container
+            systemd-container \
+            zip \
+            curl
           
           # Verify binfmt support
           echo "Available binfmt interpreters:"
@@ -220,6 +230,9 @@ jobs:
           # Configure Docker for experimental features
           echo '{"experimental": true, "features": {"buildkit": true}}' | sudo tee /etc/docker/daemon.json
           sudo systemctl restart docker
+          
+          # Wait for Docker to restart
+          sleep 5
           
           # Generate configuration file
           cat > config << EOF
@@ -249,22 +262,35 @@ jobs:
           if [ -f "./scripts/validate-rpi-image-gen.sh" ]; then
             chmod +x ./scripts/validate-rpi-image-gen.sh
             ./scripts/validate-rpi-image-gen.sh || echo "Validation script failed, continuing anyway"
+          else
+            echo "No validation script found at ./scripts/validate-rpi-image-gen.sh"
           fi
           
           # Verify Docker and buildx
+          echo "=== Docker Version ==="
           docker --version
+          echo "=== Docker Info ==="
           docker info
+          echo "=== Docker Buildx Version ==="
           docker buildx version
           
           # Test QEMU registration for cross-compilation
+          echo "=== Setting up QEMU ==="
           docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
           
           # Test cross-platform capabilities
+          echo "=== Testing Cross-Platform Support ==="
           if [[ "${{ matrix.config.arch }}" == "arm64" ]]; then
+            echo "Testing ARM64 support..."
             docker run --rm --platform=linux/arm64 arm64v8/alpine:latest uname -a || echo "ARM64 test failed"
           elif [[ "${{ matrix.config.arch }}" == "armhf" ]]; then
+            echo "Testing ARMHF support..."
             docker run --rm --platform=linux/arm/v7 arm32v7/alpine:latest uname -a || echo "ARMHF test failed"
           fi
+          
+          # Check available build scripts
+          echo "=== Available Build Scripts ==="
+          ls -la *.sh 2>/dev/null || echo "No shell scripts found"
 
       - name: "Build Crankshaft image"
         if: steps.arch_filter.outputs.skip != 'true'
@@ -284,6 +310,16 @@ jobs:
           echo "Starting rpi-image-gen build for ${{ matrix.config.arch }} on ${{ matrix.config.osname }}"
           echo "Build version: ${{ needs.version.outputs.version }}"
           
+          # Ensure build script exists and is executable
+          if [ ! -f "./build-docker-rpi-image-gen.sh" ]; then
+            echo "ERROR: build-docker-rpi-image-gen.sh not found!"
+            echo "Available files:"
+            ls -la
+            exit 1
+          fi
+          
+          chmod +x ./build-docker-rpi-image-gen.sh
+          
           # Run the build using our Docker wrapper script
           ./build-docker-rpi-image-gen.sh \
             -a "${{ matrix.config.arch }}" \
@@ -297,7 +333,11 @@ jobs:
         if: steps.arch_filter.outputs.skip != 'true'
         id: find_image
         run: |
-          echo "Searching for built image files..."
+          echo "=== Searching for built image files ==="
+          
+          # Show current directory structure
+          echo "Current directory contents:"
+          ls -la
           
           # Look for image files in multiple locations
           IMG_FILE=""
@@ -307,6 +347,7 @@ jobs:
               find "$search_dir" -name "*.img" -type f | head -10
               IMG_FILE=$(find "$search_dir" -name "*.img" -type f | head -1)
               if [ -n "$IMG_FILE" ]; then
+                echo "Found image in $search_dir: $IMG_FILE"
                 break
               fi
             fi
@@ -314,10 +355,14 @@ jobs:
           
           if [ -z "$IMG_FILE" ]; then
             echo "ERROR: No image file found"
-            echo "Available files:"
+            echo "=== Full directory search ==="
             find . -name "*.img" -o -name "*.zip" | head -20
-            echo "Directory contents:"
+            echo "=== Root directory contents ==="
             ls -la
+            echo "=== Deploy directory contents (if exists) ==="
+            ls -la deploy/ 2>/dev/null || echo "Deploy directory does not exist"
+            echo "=== Work directory contents (if exists) ==="
+            ls -la work/ 2>/dev/null || echo "Work directory does not exist"
             exit 1
           fi
           
@@ -341,13 +386,14 @@ jobs:
           done
           
           # Show final file information
-          echo "Build artifacts:"
+          echo "=== Build artifacts ==="
           ls -lh "${TARGET_NAME}"* 2>/dev/null || true
           
           # Calculate file size for summary
           if [ -f "$TARGET_NAME" ]; then
             FILE_SIZE=$(du -h "$TARGET_NAME" | cut -f1)
             echo "image_size=${FILE_SIZE}" >> $GITHUB_OUTPUT
+            echo "Image size: $FILE_SIZE"
           fi
       - name: "Package release artifacts"
         if: steps.arch_filter.outputs.skip != 'true'
@@ -428,7 +474,7 @@ jobs:
           if-no-files-found: error
 
       - name: "Upload build logs"
-        if: always()
+        if: always() && steps.arch_filter.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: "build-logs-${{ matrix.config.arch }}-${{ matrix.config.osname }}"
@@ -542,7 +588,7 @@ jobs:
   # Summary job that runs after all builds complete
   summary:
     name: "Build Summary"
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     needs: [version, build]
     if: always()
     steps:
