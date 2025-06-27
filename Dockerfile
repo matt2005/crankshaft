@@ -1,6 +1,6 @@
-FROM --platform=linux/amd64 debian:trixie
+FROM --platform=${BUILDPLATFORM} debian:trixie
 
-ENV DEBIAN_FRONTEND noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get -y update && \
     apt-get -y install \
