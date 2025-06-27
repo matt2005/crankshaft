@@ -1,21 +1,37 @@
-name: Crankshaft Build
+name: "Crankshaft Build"
 
 # Crankshaft automated build using official Raspberry Pi rpi-image-gen
 # Builds both arm64 and armhf versions for Debian Bookworm
 # Generates release artifacts with checksums and optional SBOM
+# 
+# This workflow uses the latest versions of GitHub Actions and best practices:
+# - actions/checkout@v4
+# - docker/setup-buildx-action@v3
+# - docker/setup-qemu-action@v3
+# - actions/upload-artifact@v4
+# - mikepenz/release-changelog-builder-action@v5
+# - svenstaro/upload-release-action@v2
 
 on:
-#  push:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+      - develop
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version'
+        description: 'Release version (leave empty for auto-generation)'
+        required: false
+        type: string
       architecture:
         description: 'Target Architecture'
         required: false
-        default: 'arm64'
+        default: 'both'
         type: choice
         options:
+        - both
         - arm64
         - armhf
       debian_release:
@@ -26,46 +42,77 @@ on:
         options:
         - bookworm
         - bullseye
+      debug:
+        description: 'Enable debug mode'
+        required: false
+        default: false
+        type: boolean
+
+# Ensure only one build runs at a time
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Required permissions for the workflow
+permissions:
+  contents: write
+  packages: read
+  pull-requests: read
 jobs:
   version:
+    name: "Generate version info"
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.get_version.outputs.version }}
       buildname: ${{ steps.get_version.outputs.buildname }}
       builddate: ${{ steps.get_version.outputs.builddate }}
       buildbranch: ${{ steps.get_version.outputs.buildbranch }}
       buildhash: ${{ steps.get_version.outputs.buildhash }}
-    runs-on: "ubuntu-20.04"
     steps:
-      - 
-        name: Checkout repository
+      - name: "Checkout repository"
         uses: actions/checkout@v4
-      - 
-        name: Get the version
+        with:
+          fetch-depth: 0  # Fetch full history for accurate version generation
+      
+      - name: "Generate version information"
         id: get_version
         run: |
-          if [ -z "$version" ]
-          then
-                version=$(date '+%Y%m%d')
-                echo "version=${version}" >> $GITHUB_OUTPUT
+          # Generate version based on input or auto-generate
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            version="${{ github.event.inputs.version }}"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            version="${{ github.ref_name }}"
           else
-                echo "version=${version}" >> $GITHUB_OUTPUT
+            version=$(date '+%Y%m%d-%H%M%S')
           fi
-          builddate=$(date '+%Y-%m-%d')
-          buildbranch='crankshaft-ng'
+          
+          # Clean version string (remove v prefix if present)
+          version=${version#v}
+          
+          # Generate build metadata
+          builddate=$(date -u '+%Y-%m-%d')
+          buildbranch="${{ github.ref_name }}"
           buildhash=$(git rev-parse --short "$GITHUB_SHA")
-          buildname="${builddate}-${buildbranch}-${buildhash}"
+          buildname="crankshaft-ng-${builddate}-${buildhash}"
+          
+          # Set outputs
           echo "version=${version}" >> $GITHUB_OUTPUT
-          echo "buildhash=${buildhash}" >> $GITHUB_OUTPUT
-          echo "buildbranch=${buildbranch}" >> $GITHUB_OUTPUT
           echo "builddate=${builddate}" >> $GITHUB_OUTPUT
+          echo "buildbranch=${buildbranch}" >> $GITHUB_OUTPUT
+          echo "buildhash=${buildhash}" >> $GITHUB_OUTPUT
           echo "buildname=${buildname}" >> $GITHUB_OUTPUT
-        env:
-          version: ${{ github.event.inputs.version }}
+          
+          # Debug output
+          echo "Generated version: ${version}"
+          echo "Build date: ${builddate}"
+          echo "Build branch: ${buildbranch}"
+          echo "Build hash: ${buildhash}"
+          echo "Build name: ${buildname}"
   build:
-    outputs:
-      version: ${{ steps.get_version.outputs.version }}
-    runs-on: ubuntu-latest
-    needs: [ version ]
+    name: "Build ${{ matrix.config.name }}"
+    runs-on: ubuntu-24.04
+    needs: [version]
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -75,49 +122,108 @@ jobs:
               name: "Debian Bookworm arm64",
               arch: "arm64",
               osname: "bookworm",
-              ostype: "Debian"
+              ostype: "Debian",
+              platforms: "linux/arm64"
             }
           - {
               name: "Debian Bookworm armhf",
               arch: "armhf", 
               osname: "bookworm",
-              ostype: "Debian"
+              ostype: "Debian",
+              platforms: "linux/arm/v7"
             }
-    name: 'Build: ${{ matrix.config.name }}'
+    
+    outputs:
+      artifact-name: ${{ steps.build_info.outputs.artifact_name }}
+      image-file: ${{ steps.build_info.outputs.image_file }}
+    
     steps:
-      - 
-        name: Checkout repository
-        uses: actions/checkout@v4
-      - 
-        name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - 
-        name: Get the version
-        id: get_version
+      - name: "Check architecture filter"
+        id: arch_filter
         run: |
-          if [ -n "$ostype" ]
-          then 
-                osname=${ostype}_${osname}
+          REQUESTED_ARCH="${{ github.event.inputs.architecture }}"
+          CURRENT_ARCH="${{ matrix.config.arch }}"
+          
+          # Skip if specific architecture requested and this isn't it
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] && \
+             [[ "$REQUESTED_ARCH" != "both" ]] && \
+             [[ "$REQUESTED_ARCH" != "" ]] && \
+             [[ "$REQUESTED_ARCH" != "$CURRENT_ARCH" ]]; then
+            echo "Skipping $CURRENT_ARCH build (requested: $REQUESTED_ARCH)"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "Building $CURRENT_ARCH"
+            echo "skip=false" >> $GITHUB_OUTPUT
           fi
-          echo "version=${version}-${osname}-${arch}" >> $GITHUB_OUTPUT
-        env:
-          version: ${{needs.version.outputs.version }}
-          arch: ${{ matrix.config.arch }}
-          ostype: ${{ matrix.config.ostype }}
-          osname: ${{ matrix.config.osname }}
-      - 
-        name: Setup build environment
+
+      - name: "Checkout repository"
+        if: steps.arch_filter.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: "Set up Docker Buildx"
+        if: steps.arch_filter.outputs.skip != 'true'
+        uses: docker/setup-buildx-action@v3
+        with:
+          platforms: ${{ matrix.config.platforms }}
+
+      - name: "Set up QEMU"
+        if: steps.arch_filter.outputs.skip != 'true'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: ${{ matrix.config.platforms }}
+
+      - name: "Generate build information"
+        if: steps.arch_filter.outputs.skip != 'true'
+        id: build_info
         run: |
-          # Install binfmt support for cross-compilation
+          # Build artifact naming
+          version="${{ needs.version.outputs.version }}"
+          arch="${{ matrix.config.arch }}"
+          osname="${{ matrix.config.osname }}"
+          ostype="${{ matrix.config.ostype }}"
+          
+          if [ -n "$ostype" ]; then 
+            full_osname="${ostype}_${osname}"
+          else
+            full_osname="${osname}"
+          fi
+          
+          artifact_name="${version}-${full_osname}-${arch}"
+          image_file="${artifact_name}.img"
+          
+          echo "artifact_name=${artifact_name}" >> $GITHUB_OUTPUT
+          echo "image_file=${image_file}" >> $GITHUB_OUTPUT
+          echo "version_tag=${version}" >> $GITHUB_OUTPUT
+          
+          echo "Build artifact: ${artifact_name}"
+          echo "Image file: ${image_file}"
+
+      - name: "Setup build environment"
+        if: steps.arch_filter.outputs.skip != 'true'
+        run: |
+          # Update system
           sudo apt-get update
-          sudo apt-get install -y qemu-user-static binfmt-support
           
-          # Verify binfmt is working
-          ls -la /proc/sys/fs/binfmt_misc/
+          # Install required packages for cross-compilation
+          sudo apt-get install -y \
+            qemu-user-static \
+            binfmt-support \
+            debootstrap \
+            systemd-container
           
-          # Create config file for this architecture
+          # Verify binfmt support
+          echo "Available binfmt interpreters:"
+          ls -la /proc/sys/fs/binfmt_misc/ || true
+          
+          # Configure Docker for experimental features
+          echo '{"experimental": true, "features": {"buildkit": true}}' | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
+          
+          # Generate configuration file
           cat > config << EOF
-          # Crankshaft CI Build Configuration
+          # Crankshaft CI Build Configuration - Generated $(date -u)
           IMG_NAME='crankshaft-ng'
           TARGET_ARCH='${{ matrix.config.arch }}'
           DEBIAN_RELEASE='${{ matrix.config.osname }}'
@@ -126,281 +232,341 @@ jobs:
           ENABLE_SSH=0
           DEPLOY_ZIP=1
           VERBOSE=1
+          
+          # Build metadata
+          BUILD_VERSION='${{ needs.version.outputs.version }}'
+          BUILD_DATE='${{ needs.version.outputs.builddate }}'
+          BUILD_BRANCH='${{ needs.version.outputs.buildbranch }}'
+          BUILD_HASH='${{ needs.version.outputs.buildhash }}'
           EOF
           
           echo "Generated config file:"
           cat config
-      - 
-        name: Validate build environment
+      - name: "Validate build environment"
+        if: steps.arch_filter.outputs.skip != 'true'
         run: |
-          # Run validation script
-          ./scripts/validate-rpi-image-gen.sh || true
+          # Run validation script if available
+          if [ -f "./scripts/validate-rpi-image-gen.sh" ]; then
+            chmod +x ./scripts/validate-rpi-image-gen.sh
+            ./scripts/validate-rpi-image-gen.sh || echo "Validation script failed, continuing anyway"
+          fi
           
-          # Check Docker
+          # Verify Docker and buildx
           docker --version
           docker info
-      - 
-        name: Build Crankshaft image
-        run: |
-          # Enable verbose output for CI
-          export VERBOSE=1
+          docker buildx version
           
-          # Run the rpi-image-gen build
-          echo "Starting build for ${{ matrix.config.arch }} on ${{ matrix.config.osname }}"
-          ./build-docker-rpi-image-gen.sh -a ${{ matrix.config.arch }} -r ${{ matrix.config.osname }} -v
+          # Test QEMU registration for cross-compilation
+          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+          
+          # Test cross-platform capabilities
+          if [[ "${{ matrix.config.arch }}" == "arm64" ]]; then
+            docker run --rm --platform=linux/arm64 arm64v8/alpine:latest uname -a || echo "ARM64 test failed"
+          elif [[ "${{ matrix.config.arch }}" == "armhf" ]]; then
+            docker run --rm --platform=linux/arm/v7 arm32v7/alpine:latest uname -a || echo "ARMHF test failed"
+          fi
+
+      - name: "Build Crankshaft image"
+        if: steps.arch_filter.outputs.skip != 'true'
+        id: build
+        run: |
+          # Set build environment variables
+          export VERBOSE=1
+          export DOCKER_BUILDKIT=1
+          export BUILDX_NO_DEFAULT_ATTESTATIONS=1
+          
+          # Enable debug mode if requested
+          if [[ "${{ github.event.inputs.debug }}" == "true" ]]; then
+            export DEBUG=1
+            set -x
+          fi
+          
+          echo "Starting rpi-image-gen build for ${{ matrix.config.arch }} on ${{ matrix.config.osname }}"
+          echo "Build version: ${{ needs.version.outputs.version }}"
+          
+          # Run the build using our Docker wrapper script
+          ./build-docker-rpi-image-gen.sh \
+            -a "${{ matrix.config.arch }}" \
+            -r "${{ matrix.config.osname }}" \
+            -v
+        timeout-minutes: 120
         env:
           DOCKER_BUILDKIT: 1
-        timeout-minutes: 120
-      - 
-        name: Find and rename built image
+
+      - name: "Find and prepare built image"
+        if: steps.arch_filter.outputs.skip != 'true'
         id: find_image
         run: |
-          echo "Contents of deploy directory:"
-          ls -la deploy/ || echo "Deploy directory not found"
+          echo "Searching for built image files..."
           
-          # Find the generated image
-          IMG_FILE=$(find deploy/ -name "*.img" | head -1)
+          # Look for image files in multiple locations
+          IMG_FILE=""
+          for search_dir in deploy work stage*/deploy .; do
+            if [ -d "$search_dir" ]; then
+              echo "Checking directory: $search_dir"
+              find "$search_dir" -name "*.img" -type f | head -10
+              IMG_FILE=$(find "$search_dir" -name "*.img" -type f | head -1)
+              if [ -n "$IMG_FILE" ]; then
+                break
+              fi
+            fi
+          done
+          
           if [ -z "$IMG_FILE" ]; then
-            echo "ERROR: No image file found in deploy/"
+            echo "ERROR: No image file found"
             echo "Available files:"
             find . -name "*.img" -o -name "*.zip" | head -20
+            echo "Directory contents:"
+            ls -la
             exit 1
           fi
           
           echo "Found image file: $IMG_FILE"
           
-          # Rename to expected format
-          TARGET_NAME="${{steps.get_version.outputs.version}}.img"
+          # Generate target name using build info
+          TARGET_NAME="${{ steps.build_info.outputs.image_file }}"
+          echo "Target name: $TARGET_NAME"
+          
+          # Copy to expected location
           cp "$IMG_FILE" "$TARGET_NAME"
           echo "IMG_FILENAME=${TARGET_NAME}" >> $GITHUB_OUTPUT
           
-          # Also handle other files
+          # Handle checksum files if they exist
           for ext in md5 sha1 sha256; do
-            SRC_FILE=$(find deploy/ -name "*.$ext" | head -1)
+            SRC_FILE=$(find deploy work -name "*.$ext" 2>/dev/null | head -1)
             if [ -f "$SRC_FILE" ]; then
               cp "$SRC_FILE" "${TARGET_NAME}.$ext"
-              echo "Copied $SRC_FILE to ${TARGET_NAME}.$ext"
+              echo "Copied checksum file: ${TARGET_NAME}.$ext"
             fi
           done
           
-          # Show final file sizes
-          echo "Final build artifacts:"
-          ls -lh "${TARGET_NAME}"* || true
-      - 
-        name: Package zip
-        id: packagezip
+          # Show final file information
+          echo "Build artifacts:"
+          ls -lh "${TARGET_NAME}"* 2>/dev/null || true
+          
+          # Calculate file size for summary
+          if [ -f "$TARGET_NAME" ]; then
+            FILE_SIZE=$(du -h "$TARGET_NAME" | cut -f1)
+            echo "image_size=${FILE_SIZE}" >> $GITHUB_OUTPUT
+          fi
+      - name: "Package release artifacts"
+        if: steps.arch_filter.outputs.skip != 'true'
+        id: package
         run: |
-          IMG_FILENAME="${{steps.find_image.outputs.IMG_FILENAME}}"
-          ZIP_FILENAME="${{steps.get_version.outputs.version}}.zip"
+          IMG_FILENAME="${{ steps.find_image.outputs.IMG_FILENAME }}"
+          ARTIFACT_NAME="${{ steps.build_info.outputs.artifact_name }}"
+          ZIP_FILENAME="${ARTIFACT_NAME}.zip"
           MD5HASH="${IMG_FILENAME}.md5"
           SHA1HASH="${IMG_FILENAME}.sha1"
           SHA256HASH="${IMG_FILENAME}.sha256"
           
+          echo "Packaging artifacts..."
+          echo "Image file: $IMG_FILENAME"
+          echo "Archive name: $ZIP_FILENAME"
+          
           # Generate checksums if they don't exist
           if [ ! -f "${MD5HASH}" ]; then
+            echo "Generating MD5 checksum..."
             md5sum "${IMG_FILENAME}" > "${MD5HASH}"
           fi
           if [ ! -f "${SHA1HASH}" ]; then
+            echo "Generating SHA1 checksum..."
             sha1sum "${IMG_FILENAME}" > "${SHA1HASH}"
           fi
           if [ ! -f "${SHA256HASH}" ]; then
+            echo "Generating SHA256 checksum..."
             sha256sum "${IMG_FILENAME}" > "${SHA256HASH}"
           fi
           
-          # Create zip archive
-          zip "${ZIP_FILENAME}" "${IMG_FILENAME}" "${MD5HASH}" "${SHA1HASH}" "${SHA256HASH}"
+          # Create comprehensive ZIP archive
+          echo "Creating ZIP archive..."
+          zip -9 "${ZIP_FILENAME}" "${IMG_FILENAME}" "${MD5HASH}" "${SHA1HASH}" "${SHA256HASH}"
           
+          # Generate additional metadata file
+          cat > "${ARTIFACT_NAME}.json" << EOF
+          {
+            "version": "${{ needs.version.outputs.version }}",
+            "architecture": "${{ matrix.config.arch }}",
+            "debian_release": "${{ matrix.config.osname }}",
+            "build_date": "${{ needs.version.outputs.builddate }}",
+            "build_branch": "${{ needs.version.outputs.buildbranch }}",
+            "build_hash": "${{ needs.version.outputs.buildhash }}",
+            "image_file": "${IMG_FILENAME}",
+            "image_size": "${{ steps.find_image.outputs.image_size || 'unknown' }}",
+            "checksums": {
+              "md5": "$(cat ${MD5HASH} | cut -d' ' -f1)",
+              "sha1": "$(cat ${SHA1HASH} | cut -d' ' -f1)",
+              "sha256": "$(cat ${SHA256HASH} | cut -d' ' -f1)"
+            }
+          }
+          EOF
+          
+          # Set outputs
           echo "ZIP_FILENAME=${ZIP_FILENAME}" >> $GITHUB_OUTPUT
           echo "MD5HASH=${MD5HASH}" >> $GITHUB_OUTPUT
           echo "SHA1HASH=${SHA1HASH}" >> $GITHUB_OUTPUT
           echo "SHA256HASH=${SHA256HASH}" >> $GITHUB_OUTPUT
-      - 
-        name: Upload build artifacts 
-        id: upload_deploy
+          echo "METADATA_FILE=${ARTIFACT_NAME}.json" >> $GITHUB_OUTPUT
+          
+          # Show final package contents
+          echo "Package contents:"
+          ls -lh "${ZIP_FILENAME}" "${ARTIFACT_NAME}.json" || true
+
+      - name: "Upload build artifacts"
+        if: steps.arch_filter.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.get_version.outputs.version }}
+          name: ${{ steps.build_info.outputs.artifact_name }}
           path: |
-            ${{ steps.packagezip.outputs.ZIP_FILENAME }}
-            ${{ steps.packagezip.outputs.MD5HASH }}
-            ${{ steps.packagezip.outputs.SHA1HASH }}
-            ${{ steps.packagezip.outputs.SHA256HASH }}
+            ${{ steps.package.outputs.ZIP_FILENAME }}
+            ${{ steps.package.outputs.MD5HASH }}
+            ${{ steps.package.outputs.SHA1HASH }}
+            ${{ steps.package.outputs.SHA256HASH }}
+            ${{ steps.package.outputs.METADATA_FILE }}
           retention-days: 30
-      - 
-        name: Upload build logs
+          compression-level: 1  # Already compressed
+          if-no-files-found: error
+
+      - name: "Upload build logs"
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs-${{ matrix.config.arch }}-${{ matrix.config.osname }}
+          name: "build-logs-${{ matrix.config.arch }}-${{ matrix.config.osname }}"
           path: |
             work/*/output/*.log
             work/*/build.log
+            *.log
           retention-days: 7
           if-no-files-found: ignore
-      - 
-        name: Build Changelog
-        id: github_release
-        uses: mikepenz/release-changelog-builder-action@v5.1.0
+
+      - name: "Generate changelog"
+        if: steps.arch_filter.outputs.skip != 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        id: changelog
+        uses: mikepenz/release-changelog-builder-action@v5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Upload binaries to release
+        with:
+          configurationJson: |
+            {
+              "categories": [
+                {"title": "## 🚀 Features", "labels": ["feature", "enhancement"]},
+                {"title": "## 🐛 Bug Fixes", "labels": ["fix", "bugfix", "bug"]},
+                {"title": "## 🔧 Improvements", "labels": ["improvement", "refactor"]},
+                {"title": "## 📚 Documentation", "labels": ["documentation", "docs"]},
+                {"title": "## 🧪 Testing", "labels": ["test", "testing"]}
+              ],
+              "template": "#{{CHANGELOG}}\n\n## Build Information\n- **Architecture:** ${{ matrix.config.arch }}\n- **Debian Release:** ${{ matrix.config.osname }}\n- **Build Date:** ${{ needs.version.outputs.builddate }}\n- **Git Hash:** ${{ needs.version.outputs.buildhash }}\n\n<details>\n<summary>Other Changes</summary>\n\n#{{UNCATEGORIZED}}\n</details>"
+            }
+
+      - name: "Create release and upload assets"
+        if: steps.arch_filter.outputs.skip != 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: ${{ steps.packagezip.outputs.ZIP_FILENAME }}
-          asset_name: ${{ steps.packagezip.outputs.ZIP_FILENAME }}
-          tag: ${{needs.version.outputs.version }}
-          make_latest: false
-          prerelease: true
+          file: ${{ steps.package.outputs.ZIP_FILENAME }}
+          asset_name: ${{ steps.package.outputs.ZIP_FILENAME }}
+          tag: ${{ needs.version.outputs.version }}
+          release_name: "Crankshaft NG ${{ needs.version.outputs.version }}"
+          make_latest: ${{ !contains(needs.version.outputs.version, 'rc') && !contains(needs.version.outputs.version, 'beta') && !contains(needs.version.outputs.version, 'alpha') }}
+          prerelease: ${{ contains(needs.version.outputs.version, 'rc') || contains(needs.version.outputs.version, 'beta') || contains(needs.version.outputs.version, 'alpha') }}
           body: |
-            ## Crankshaft NG Build ${{needs.version.outputs.version}}
+            ## Crankshaft NG ${{ needs.version.outputs.version }}
             
-            **Architecture:** ${{ matrix.config.arch }}  
-            **Debian Release:** ${{ matrix.config.osname }}
-            **Build Date:** ${{needs.version.outputs.builddate}}
-            **Git Branch:** ${{needs.version.outputs.buildbranch}}
-            **Git Hash:** ${{needs.version.outputs.buildhash}}
+            ### 📋 Build Details
+            - **Architecture:** ${{ matrix.config.arch }}
+            - **Debian Release:** ${{ matrix.config.osname }}  
+            - **Build Date:** ${{ needs.version.outputs.builddate }}
+            - **Git Branch:** ${{ needs.version.outputs.buildbranch }}
+            - **Git Hash:** ${{ needs.version.outputs.buildhash }}
+            - **Image Size:** ${{ steps.find_image.outputs.image_size || 'See ZIP contents' }}
             
-            ### Built with official Raspberry Pi rpi-image-gen
+            ### 🔧 Built with Official Raspberry Pi rpi-image-gen
             
-            This image was built using the modern [rpi-image-gen](https://github.com/raspberrypi/rpi-image-gen) build system.
+            This image was built using the modern [rpi-image-gen](https://github.com/raspberrypi/rpi-image-gen) build system,
+            providing better reliability and up-to-date Raspberry Pi support.
             
-            ### Installation
+            ### 📥 Installation Instructions
             
-            1. Download the ZIP file
-            2. Extract the `.img` file
-            3. Flash to SD card using [Raspberry Pi Imager](https://www.raspberrypi.com/software/)
+            1. **Download** the ZIP file for your architecture
+            2. **Extract** the `.img` file from the ZIP
+            3. **Flash** to SD card using [Raspberry Pi Imager](https://www.raspberrypi.com/software/) or `dd`
+            4. **Boot** your Raspberry Pi with the new image
             
-            ### Checksums
+            ### 🔐 Verification
             
-            - MD5: See `.md5` file in the ZIP
-            - SHA1: See `.sha1` file in the ZIP  
-            - SHA256: See `.sha256` file in the ZIP
-      - 
-        name: Upload SBOM if available
-        if: always()
+            All releases include checksums for verification:
+            - **MD5:** See `.md5` file in the ZIP
+            - **SHA1:** See `.sha1` file in the ZIP  
+            - **SHA256:** See `.sha256` file in the ZIP
+            
+            ### 🆘 Support
+            
+            - [Documentation](https://github.com/opencardev/crankshaft/blob/main/README.md)
+            - [Issues](https://github.com/opencardev/crankshaft/issues)
+            - [Discussions](https://github.com/opencardev/crankshaft/discussions)
+            
+            ${{ steps.changelog.outputs.changelog || '' }}
+
+      - name: "Upload checksum files to release"
+        if: steps.arch_filter.outputs.skip != 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file_glob: true
+          file: "${{ steps.build_info.outputs.artifact_name }}.*"
+          tag: ${{ needs.version.outputs.version }}
+          overwrite: true
+
+      - name: "Upload SBOM if available"
+        if: steps.arch_filter.outputs.skip != 'true'
         run: |
-          # Check for SBOM files and upload them
-          SBOM_FILE=$(find deploy/ -name "*.sbom" | head -1)
-          if [ -n "$SBOM_FILE" ]; then
+          # Search for Software Bill of Materials files
+          SBOM_FILE=$(find deploy work -name "*.sbom" -o -name "*.spdx*" -o -name "*sbom*" 2>/dev/null | head -1)
+          if [ -n "$SBOM_FILE" ] && [ -f "$SBOM_FILE" ]; then
             echo "Found SBOM file: $SBOM_FILE"
-            cp "$SBOM_FILE" "${{ steps.get_version.outputs.version }}.sbom"
+            SBOM_NAME="${{ steps.build_info.outputs.artifact_name }}.sbom"
+            cp "$SBOM_FILE" "$SBOM_NAME"
             
-            # Upload SBOM as release asset
-            curl -X POST \
-              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Content-Type: application/octet-stream" \
-              --data-binary @"${{ steps.get_version.outputs.version }}.sbom" \
-              "https://uploads.github.com/repos/${{ github.repository }}/releases/tags/${{needs.version.outputs.version }}/assets?name=${{ steps.get_version.outputs.version }}.sbom" || true
+            # Upload SBOM as release asset if this is a tag build
+            if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+              curl -X POST \
+                -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                -H "Content-Type: application/octet-stream" \
+                --data-binary @"$SBOM_NAME" \
+                "https://uploads.github.com/repos/${{ github.repository }}/releases/tags/${{ needs.version.outputs.version }}/assets?name=$SBOM_NAME" || true
+            fi
           else
             echo "No SBOM file found"
           fi
-# Create Release
-#  release:
-#    runs-on: ubuntu-latest
-#    needs: [ version, build ]
-#    name: 'Create release'
-#    outputs:
-#      release_upload_url: ${{ steps.create_release.outputs.upload_url }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
-#    steps:
-#      - 
-#        name: Build Changelog
-#        id: github_release
-#        uses: mikepenz/release-changelog-builder-action@v5.1.0
-#        env:
-#          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-#      - 
-#        name: Create GitHub release
-#        id: create_release
-#        uses: actions/create-release@v1.0.0
-#        env:
-#          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-#        with:
-#          tag_name: ${{needs.version.outputs.version }}
-#          release_name: ${{needs.version.outputs.buildname }}
-#          #body: ${{steps.github_release.outputs.changelog}}
-#          draft: true
-#          prerelease: true
-# Upload release artifacts
-#  upload:
-#    needs: [ version, build, release ]
-#    runs-on: ${{ matrix.host }}
-#    strategy:
-#      fail-fast: false
-#      max-parallel: 3
-#      matrix:
-#        host: [
-#          "ubuntu-latest",
-#          #"macos-10.15",
-#        ]
-#        config:
-#          - {
-#              name: "Debian Buster armhf",
-#              basefile: "updater/base_buster_armhf",
-#              arch: "armhf",
-#              osname: "buster",
-#              ostype: "Debian"
-#            }
-#          - {
-#              name: "Debian Buster arm7",
-#              basefile: "updater/base_buster_arm7",
-#              arch: "arm7",
-#              osname: "buster",
-#              ostype: "Debian"
-#            }
-#    steps:
-#    - 
-#        name: Get the version
-#        id: get_version
-#        run: |
-#          if [ -n "$ostype" ]
-#          then 
-#                osname=${ostype}_${osname}
-#          fi
-#          echo "version=${version}-${osname}-${arch}" >> $GITHUB_OUTPUT
-#        env:
-#          version: ${{needs.version.outputs.version }}
-#          arch: ${{ matrix.config.arch }}
-#          ostype: ${{ matrix.config.ostype }}
-#          osname: ${{ matrix.config.osname }}
-#    - 
-#      name: Download artifact
-#      uses: actions/download-artifact@v4
-#      with:
-#        name: ${{ steps.get_version.outputs.version }}
-#    - name: Upload binaries to release
-#      uses: svenstaro/upload-release-action@v2
-#      with:
-#        repo_token: ${{ secrets.GITHUB_TOKEN }}
-#        file: ${{ steps.get_version.outputs.version }}/${{ steps.get_version.outputs.version }}.zip
-#        asset_name: ${{ steps.get_version.outputs.version }}.zip
-#        tag: ${{ steps.get_version.outputs.version }}
-#        release_name: ${{needs.version.outputs.buildname }}
-#        draft: true
-#    - name: Upload MD5 to release
-#      uses: svenstaro/upload-release-action@v2
-#      with:
-#        repo_token: ${{ secrets.GITHUB_TOKEN }}
-#        file: target/release/${{ steps.get_version.outputs.version }}.img.md5
-#        asset_name: ${{ steps.get_version.outputs.version }}.img.md5
-#        tag: ${{ github.ref }}
-#        release_name: ${{needs.version.outputs.buildname }}
-#        draft: true
-#    - name: Upload SHA1 to release
-#      uses: svenstaro/upload-release-action@v2
-#      with:
-#        repo_token: ${{ secrets.GITHUB_TOKEN }}
-#        file: target/release/${{ steps.get_version.outputs.version }}.img.sha1
-#        asset_name: ${{ steps.get_version.outputs.version }}.img.sha1
-#        tag: ${{ github.ref }}
-#        release_name: ${{needs.version.outputs.buildname }}
-#        draft: true
-#    - name: Upload SHA256 to release
-#      uses: svenstaro/upload-release-action@v2
-#      with:
-#        repo_token: ${{ secrets.GITHUB_TOKEN }}
-#        file: target/release/${{ steps.get_version.outputs.version }}.img.sha256
-#        asset_name: ${{ steps.get_version.outputs.version }}.img.sha256
-#        tag: ${{ github.ref }}
-#        release_name: ${{needs.version.outputs.buildname }}
-#        draft: true
+
+  # Summary job that runs after all builds complete
+  summary:
+    name: "Build Summary"
+    runs-on: ubuntu-24.04
+    needs: [version, build]
+    if: always()
+    steps:
+      - name: "Build Summary"
+        run: |
+          echo "# Crankshaft Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ needs.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Build Date:** ${{ needs.version.outputs.builddate }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Git Hash:** ${{ needs.version.outputs.buildhash }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "${{ needs.build.result }}" == "success" ]]; then
+            echo "✅ **Build Status:** Successful" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "🎉 All artifacts have been built and uploaded successfully!" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Build Status:** Failed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "💥 Build failed. Check the build logs for details." >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Artifacts Generated" >> $GITHUB_STEP_SUMMARY
+          echo "- Crankshaft images for arm64 and armhf architectures" >> $GITHUB_STEP_SUMMARY
+          echo "- Checksums (MD5, SHA1, SHA256)" >> $GITHUB_STEP_SUMMARY
+          echo "- Build metadata and logs" >> $GITHUB_STEP_SUMMARY
