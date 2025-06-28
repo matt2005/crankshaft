@@ -28,6 +28,7 @@ RUN apt-get update && apt-get install -y \
     coreutils quilt parted debootstrap bdebstrap mmdebstrap zerofree \
     dosfstools libarchive-tools libcap2-bin rsync xz-utils file git curl bc \
     gpg pigz xxd \
+    zstd dbus-user-session uuid-runtime \
     # Additional tools that are available
     crudini pv util-linux \
     # Python packages
