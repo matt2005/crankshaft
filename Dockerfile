@@ -29,6 +29,7 @@ RUN apt-get update && apt-get install -y \
     dosfstools libarchive-tools libcap2-bin rsync xz-utils file git curl bc \
     gpg pigz xxd \
     zstd dbus-user-session uuid-runtime \
+    genimage mtools podman python-is-python3 btrfs-progs dctrl-tools \
     # Additional tools that are available
     crudini pv util-linux \
     # Python packages
