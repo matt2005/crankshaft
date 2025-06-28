@@ -25,25 +25,28 @@ RUN git clone --depth 1 https://github.com/raspberrypi/rpi-image-gen.git /rpi-im
 # Install dependencies manually - many rpi-image-gen deps aren't in Debian Bookworm
 RUN apt-get update && apt-get install -y \
     # Essential build tools available in Bookworm
-    coreutils quilt parted debootstrap bdebstrap mmdebstrap zerofree \
+    coreutils quilt parted debootstrap zerofree \
     dosfstools libarchive-tools libcap2-bin rsync xz-utils file git curl bc \
     gpg pigz xxd \
-    zstd dbus-user-session uuid-runtime \
-    genimage mtools podman python-is-python3 btrfs-progs dctrl-tools \
     # Additional tools that are available
     crudini pv util-linux \
     # Python packages
     python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-# Note: Some rpi-image-gen dependencies (bdebstrap, mmdebstrap, etc.) are not available
-# in Debian Bookworm. We'll need to modify our build approach to work without them
-# or fall back to a simpler image creation method.
+# Try to install additional packages that might be available
+RUN apt-get update && \
+    (apt-get install -y bdebstrap mmdebstrap 2>/dev/null || echo "Modern debootstrap tools not available") && \
+    (apt-get install -y zstd dbus-user-session uuid-runtime 2>/dev/null || echo "Some utility packages not available") && \
+    (apt-get install -y genimage mtools btrfs-progs dctrl-tools 2>/dev/null || echo "Some build tools not available") && \
+    (apt-get install -y podman 2>/dev/null || echo "Podman not available, will use docker") && \
+    (apt-get install -y python-is-python3 2>/dev/null || echo "python-is-python3 not available") && \
+    rm -rf /var/lib/apt/lists/*
 
-# Install Dependencies for rpi-image-gen
+# Try to run install_deps.sh but continue on failure
 RUN cd /rpi-image-gen && \
     chmod +x install_deps.sh && \
-    ./install_deps.sh || echo "install_deps.sh failed, continuing with available tools"
+    (./install_deps.sh 2>/dev/null || echo "install_deps.sh failed, continuing with available tools")
 
 # Make build script executable
 RUN cd /rpi-image-gen && chmod +x build.sh

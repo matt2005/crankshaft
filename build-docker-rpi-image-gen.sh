@@ -128,6 +128,42 @@ fi
 
 # Run the build
 echo "Starting containerized build..."
+
+# Ensure binfmt_misc is available on host
+echo "Setting up binfmt_misc support..."
+if [ ! -d "/proc/sys/fs/binfmt_misc" ]; then
+	echo "binfmt_misc filesystem not mounted, attempting to mount..."
+	sudo mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null || {
+		echo "WARNING: Could not mount binfmt_misc filesystem"
+		echo "Cross-compilation may not work properly"
+	}
+fi
+
+# Register QEMU binfmt handlers if not already done
+echo "Registering QEMU binfmt handlers..."
+${DOCKER} run --rm --privileged multiarch/qemu-user-static --reset -p yes || {
+	echo "WARNING: Could not register QEMU binfmt handlers"
+	echo "Cross-compilation may not work properly"
+}
+
+# Verify binfmt registration
+echo "Verifying binfmt registration..."
+if [ -d "/proc/sys/fs/binfmt_misc" ]; then
+	echo "Available binfmt interpreters:"
+	ls -la /proc/sys/fs/binfmt_misc/ | head -10
+	
+	# Check for specific architecture support
+	if [ "${TARGET_ARCH}" = "arm64" ] && [ -f "/proc/sys/fs/binfmt_misc/qemu-aarch64" ]; then
+		echo "✓ ARM64 (aarch64) support detected"
+	elif [ "${TARGET_ARCH}" = "armhf" ] && [ -f "/proc/sys/fs/binfmt_misc/qemu-arm" ]; then
+		echo "✓ ARMHF (arm) support detected"
+	else
+		echo "⚠ Architecture-specific binfmt handler not found for ${TARGET_ARCH}"
+	fi
+else
+	echo "⚠ binfmt_misc not available"
+fi
+
 if [ "${VERBOSE:-0}" = "1" ]; then
 	echo "Running with verbose output..."
 	DOCKER_ARGS="--rm --privileged"
@@ -142,6 +178,7 @@ echo "  --name \"${CONTAINER_NAME}\" \\"
 echo "  ${VOLUME_MOUNTS} \\"
 echo "  --volume \"${DIR}/work\":/workspace/work \\"
 echo "  --volume \"${DIR}/deploy\":/workspace/deploy \\"
+echo "  --volume /proc/sys/fs/binfmt_misc:/proc/sys/fs/binfmt_misc:rw \\"
 echo "  -e \"TARGET_ARCH=${TARGET_ARCH}\" \\"
 echo "  -e \"DEBIAN_RELEASE=${DEBIAN_RELEASE}\" \\"
 echo "  -e \"IMG_NAME=${IMG_NAME:-crankshaft-ng}\" \\"
@@ -157,6 +194,7 @@ if ! ${DOCKER} run ${DOCKER_ARGS} \
 	${VOLUME_MOUNTS} \
 	--volume "${DIR}/work":/workspace/work \
 	--volume "${DIR}/deploy":/workspace/deploy \
+	--volume /proc/sys/fs/binfmt_misc:/proc/sys/fs/binfmt_misc:rw \
 	-e "TARGET_ARCH=${TARGET_ARCH}" \
 	-e "DEBIAN_RELEASE=${DEBIAN_RELEASE}" \
 	-e "IMG_NAME=${IMG_NAME:-crankshaft-ng}" \

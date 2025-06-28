@@ -188,12 +188,39 @@ jobs:
           # Set up QEMU with binfmt registration for cross-compilation
           echo "Setting up QEMU and binfmt for cross-compilation..."
           
+          # Ensure binfmt_misc filesystem is mounted
+          echo "Checking binfmt_misc filesystem..."
+          if [ ! -d "/proc/sys/fs/binfmt_misc" ]; then
+            echo "Mounting binfmt_misc filesystem..."
+            sudo mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc
+          else
+            echo "binfmt_misc filesystem already mounted"
+          fi
+          
           # Register QEMU binfmt handlers
+          echo "Registering QEMU binfmt handlers..."
           docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
           
           # Verify binfmt registration
           echo "Verifying binfmt registration:"
-          ls -la /proc/sys/fs/binfmt_misc/ 2>/dev/null || echo "binfmt_misc not mounted"
+          ls -la /proc/sys/fs/binfmt_misc/ 2>/dev/null || echo "binfmt_misc not accessible"
+          
+          # Check for specific architecture handlers
+          if [[ "${{ matrix.config.arch }}" == "arm64" ]]; then
+            if [ -f "/proc/sys/fs/binfmt_misc/qemu-aarch64" ]; then
+              echo "✓ ARM64 (aarch64) binfmt handler registered"
+              cat /proc/sys/fs/binfmt_misc/qemu-aarch64 | head -5
+            else
+              echo "⚠ ARM64 binfmt handler not found"
+            fi
+          elif [[ "${{ matrix.config.arch }}" == "armhf" ]]; then
+            if [ -f "/proc/sys/fs/binfmt_misc/qemu-arm" ]; then
+              echo "✓ ARMHF (arm) binfmt handler registered"
+              cat /proc/sys/fs/binfmt_misc/qemu-arm | head -5
+            else
+              echo "⚠ ARMHF binfmt handler not found"
+            fi
+          fi
           
           # Test architecture support
           if [[ "${{ matrix.config.arch }}" == "arm64" ]]; then

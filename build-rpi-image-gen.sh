@@ -195,11 +195,34 @@ build_image() {
     cd /rpi-image-gen
     
     log "Checking available build tools..."
+    log "Directory contents: $(ls -la)"
+    
+    # Check for modern tools
+    if command -v bdebstrap >/dev/null 2>&1; then
+        log "✓ bdebstrap found: $(which bdebstrap)"
+    else
+        log "✗ bdebstrap not found"
+    fi
+    
+    if command -v mmdebstrap >/dev/null 2>&1; then
+        log "✓ mmdebstrap found: $(which mmdebstrap)"
+    else
+        log "✗ mmdebstrap not found"
+    fi
+    
+    if command -v debootstrap >/dev/null 2>&1; then
+        log "✓ debootstrap found: $(which debootstrap)"
+    else
+        log "✗ debootstrap not found"
+    fi
+    
+    # Check if we have the modern tools needed
     if command -v bdebstrap >/dev/null 2>&1 && command -v mmdebstrap >/dev/null 2>&1; then
         log "Found modern rpi-image-gen tools (bdebstrap/mmdebstrap) - using new approach"
         build_with_modern_tools
     else
         log "Modern tools not available - using fallback approach"
+        log "Available tools: $(compgen -c | grep -E '(bootstrap|mmdebstrap|bdebstrap)' | sort || echo 'none')"
         build_with_fallback
     fi
     
@@ -246,10 +269,19 @@ build_with_fallback() {
     log "Using fallback build method..."
     log "Creating a simple Debian-based image using debootstrap..."
     
+    # Verify we have debootstrap available
+    if ! command -v debootstrap >/dev/null 2>&1; then
+        log "ERROR: debootstrap not available for fallback"
+        exit 1
+    fi
+    
+    log "Using debootstrap: $(which debootstrap)"
+    
     # Create a simple image using debootstrap directly
     local work_subdir="${WORK_DIR}/simple-build"
     local rootfs_dir="${work_subdir}/rootfs"
     
+    log "Creating work directory: ${work_subdir}"
     mkdir -p "${work_subdir}"
     
     # Use debootstrap to create base system
@@ -262,7 +294,27 @@ build_with_fallback() {
         debian_arch="arm64"
     fi
     
+    log "Target architecture: ${debian_arch}"
+    log "Debian release: ${DEBIAN_RELEASE}"
+    
+    # Check if we're doing cross-compilation
+    local host_arch=$(dpkg --print-architecture 2>/dev/null || uname -m)
+    log "Host architecture: ${host_arch}"
+    
+    if [ "${debian_arch}" != "${host_arch}" ] && [ "${host_arch}" != "amd64" ]; then
+        log "Cross-compilation detected, checking binfmt support..."
+        
+        # Check if binfmt_misc is available
+        if [ ! -d "/proc/sys/fs/binfmt_misc" ]; then
+            log "WARNING: binfmt_misc not available, cross-compilation may fail"
+        else
+            log "binfmt_misc available, checking for architecture support..."
+            ls -la /proc/sys/fs/binfmt_misc/ | grep -E "(qemu-aarch64|qemu-arm)" || log "WARNING: QEMU binfmt handlers not found"
+        fi
+    fi
+    
     # Create basic Debian system
+    log "Running debootstrap..."
     debootstrap --arch="${debian_arch}" \
         --include="systemd,udev,kmod,ifupdown,isc-dhcp-client,wpasupplicant,ssh,sudo,vim,nano" \
         "${DEBIAN_RELEASE}" \
@@ -273,6 +325,8 @@ build_with_fallback() {
         log "ERROR: debootstrap failed"
         exit 1
     fi
+    
+    log "Base system created successfully"
     
     # Basic system configuration
     configure_fallback_system "${rootfs_dir}"
