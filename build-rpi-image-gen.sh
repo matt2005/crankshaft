@@ -300,17 +300,38 @@ build_with_fallback() {
     # Check if we're doing cross-compilation
     local host_arch=$(dpkg --print-architecture 2>/dev/null || uname -m)
     log "Host architecture: ${host_arch}"
+    log "Target architecture: ${debian_arch}"
     
     if [ "${debian_arch}" != "${host_arch}" ] && [ "${host_arch}" != "amd64" ]; then
         log "Cross-compilation detected, checking binfmt support..."
         
         # Check if binfmt_misc is available
         if [ ! -d "/proc/sys/fs/binfmt_misc" ]; then
-            log "WARNING: binfmt_misc not available, cross-compilation may fail"
+            log "WARNING: binfmt_misc not available"
+            log "Cross-compilation may fail or be very slow"
+            log "Attempting to continue with native tools where possible"
         else
             log "binfmt_misc available, checking for architecture support..."
-            ls -la /proc/sys/fs/binfmt_misc/ | grep -E "(qemu-aarch64|qemu-arm)" || log "WARNING: QEMU binfmt handlers not found"
+            local qemu_handlers=$(ls -la /proc/sys/fs/binfmt_misc/ 2>/dev/null | grep -E "(qemu-aarch64|qemu-arm)" || true)
+            if [ -n "${qemu_handlers}" ]; then
+                log "Found QEMU handlers:"
+                echo "${qemu_handlers}"
+            else
+                log "WARNING: QEMU binfmt handlers not found"
+                log "This may cause cross-compilation to fail"
+                
+                # Try to detect if QEMU static binaries are available
+                if [ "${debian_arch}" = "arm64" ] && [ -x "/usr/bin/qemu-aarch64-static" ]; then
+                    log "Found qemu-aarch64-static binary, may still work"
+                elif [ "${debian_arch}" = "armhf" ] && [ -x "/usr/bin/qemu-arm-static" ]; then
+                    log "Found qemu-arm-static binary, may still work"
+                else
+                    log "No QEMU static binaries found either"
+                fi
+            fi
         fi
+    else
+        log "Native build or amd64 host detected, no cross-compilation needed"
     fi
     
     # Create basic Debian system

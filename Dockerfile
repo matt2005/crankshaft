@@ -54,7 +54,12 @@ RUN echo "=== Checking available dependencies ===" && \
     which mmdebstrap || echo "mmdebstrap not available" && \
     which bdebstrap || echo "bdebstrap not available" && \
     which debootstrap || echo "debootstrap available" && \
-    echo "=== This build will need to use alternative methods ==="
+    echo "=== QEMU emulation status ===" && \
+    which qemu-aarch64-static || echo "qemu-aarch64-static not found" && \
+    which qemu-arm-static || echo "qemu-arm-static not found" && \
+    echo "=== binfmt_misc status ===" && \
+    (ls -la /proc/sys/fs/binfmt_misc/ 2>/dev/null | head -5) || echo "binfmt_misc not accessible" && \
+    echo "=== This build will use available methods ==="
 
 COPY . /workspace/
 

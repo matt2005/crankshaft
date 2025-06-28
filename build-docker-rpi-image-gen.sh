@@ -132,6 +132,22 @@ echo "Starting containerized build..."
 # Ensure binfmt_misc is available on host
 echo "Setting up binfmt_misc support..."
 
+# Check if binfmt_misc module is loaded
+echo "Checking binfmt_misc kernel module..."
+if ! lsmod | grep -q binfmt_misc 2>/dev/null; then
+	echo "binfmt_misc module not loaded, attempting to load it..."
+	sudo modprobe binfmt_misc 2>/dev/null || {
+		echo "WARNING: Could not load binfmt_misc module"
+		echo "This might be due to:"
+		echo "  - Running in a container without module loading privileges"
+		echo "  - Kernel without binfmt_misc support"
+		echo "  - Security restrictions"
+		echo "Will attempt to continue with Docker's built-in emulation support"
+	}
+else
+	echo "binfmt_misc module already loaded"
+fi
+
 # First check if /proc/sys/fs exists (some containers might not have it)
 if [ ! -d "/proc/sys/fs" ]; then
 	echo "WARNING: /proc/sys/fs not available in this environment"
@@ -147,7 +163,7 @@ elif [ ! -d "/proc/sys/fs/binfmt_misc" ]; then
 		echo "  - Insufficient privileges"
 		echo "  - Container restrictions"
 		echo "  - Missing kernel support"
-		echo "Cross-compilation may not work properly"
+		echo "Will rely on Docker's privileged mode for cross-compilation"
 	}
 else
 	echo "binfmt_misc filesystem already available"
@@ -156,23 +172,25 @@ fi
 # Register QEMU binfmt handlers if not already done
 echo "Registering QEMU binfmt handlers..."
 if command -v docker >/dev/null 2>&1; then
+	# Try the standard multiarch approach
 	${DOCKER} run --rm --privileged multiarch/qemu-user-static --reset -p yes 2>/dev/null || {
-		echo "WARNING: Could not register QEMU binfmt handlers using Docker"
-		echo "This might be due to:"
-		echo "  - Docker daemon not running or accessible"
-		echo "  - Insufficient privileges"
-		echo "  - Missing multiarch/qemu-user-static image"
-		echo "Attempting alternative registration method..."
+		echo "Standard QEMU registration failed, trying alternative approaches..."
 		
-		# Try alternative method if available
-		if command -v qemu-aarch64-static >/dev/null 2>&1; then
-			echo "Found qemu-aarch64-static, attempting manual registration..."
-			# This would require manual binfmt registration - skip for now
-			echo "Manual QEMU registration requires root access and is complex"
-		else
-			echo "QEMU emulation may not be available for cross-compilation"
-		fi
+		# Alternative 1: Try without --reset flag
+		${DOCKER} run --rm --privileged multiarch/qemu-user-static -p yes 2>/dev/null || {
+			echo "Alternative QEMU registration also failed"
+			
+			# Alternative 2: Try using docker buildx
+			echo "Setting up Docker buildx for multi-arch support..."
+			${DOCKER} buildx create --use --name multiarch --driver docker-container 2>/dev/null || true
+			${DOCKER} buildx inspect --bootstrap 2>/dev/null || {
+				echo "Docker buildx setup also failed"
+				echo "Will rely on privileged container mode for emulation"
+			}
+		}
 	}
+	
+	echo "QEMU setup completed (with potential fallbacks)"
 else
 	echo "Docker not available, skipping QEMU handler registration"
 fi
