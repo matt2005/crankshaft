@@ -43,11 +43,6 @@ RUN apt-get update && \
     (apt-get install -y python-is-python3 2>/dev/null || echo "python-is-python3 not available") && \
     rm -rf /var/lib/apt/lists/*
 
-# Try to run install_deps.sh but continue on failure
-RUN cd /rpi-image-gen && \
-    chmod +x install_deps.sh && \
-    (./install_deps.sh 2>/dev/null || echo "install_deps.sh failed, continuing with available tools")
-
 # Make build script executable
 RUN cd /rpi-image-gen && chmod +x build.sh
 
