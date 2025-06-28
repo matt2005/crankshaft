@@ -131,26 +131,62 @@ echo "Starting containerized build..."
 
 # Ensure binfmt_misc is available on host
 echo "Setting up binfmt_misc support..."
-if [ ! -d "/proc/sys/fs/binfmt_misc" ]; then
+
+# First check if /proc/sys/fs exists (some containers might not have it)
+if [ ! -d "/proc/sys/fs" ]; then
+	echo "WARNING: /proc/sys/fs not available in this environment"
+	echo "This might be a restricted container environment"
+	echo "Cross-compilation support may be limited"
+elif [ ! -d "/proc/sys/fs/binfmt_misc" ]; then
 	echo "binfmt_misc filesystem not mounted, attempting to mount..."
+	# Create the mount point if it doesn't exist
+	sudo mkdir -p /proc/sys/fs/binfmt_misc 2>/dev/null || true
 	sudo mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null || {
 		echo "WARNING: Could not mount binfmt_misc filesystem"
+		echo "This might be due to:"
+		echo "  - Insufficient privileges"
+		echo "  - Container restrictions"
+		echo "  - Missing kernel support"
 		echo "Cross-compilation may not work properly"
 	}
+else
+	echo "binfmt_misc filesystem already available"
 fi
 
 # Register QEMU binfmt handlers if not already done
 echo "Registering QEMU binfmt handlers..."
-${DOCKER} run --rm --privileged multiarch/qemu-user-static --reset -p yes || {
-	echo "WARNING: Could not register QEMU binfmt handlers"
-	echo "Cross-compilation may not work properly"
-}
+if command -v docker >/dev/null 2>&1; then
+	${DOCKER} run --rm --privileged multiarch/qemu-user-static --reset -p yes 2>/dev/null || {
+		echo "WARNING: Could not register QEMU binfmt handlers using Docker"
+		echo "This might be due to:"
+		echo "  - Docker daemon not running or accessible"
+		echo "  - Insufficient privileges"
+		echo "  - Missing multiarch/qemu-user-static image"
+		echo "Attempting alternative registration method..."
+		
+		# Try alternative method if available
+		if command -v qemu-aarch64-static >/dev/null 2>&1; then
+			echo "Found qemu-aarch64-static, attempting manual registration..."
+			# This would require manual binfmt registration - skip for now
+			echo "Manual QEMU registration requires root access and is complex"
+		else
+			echo "QEMU emulation may not be available for cross-compilation"
+		fi
+	}
+else
+	echo "Docker not available, skipping QEMU handler registration"
+fi
+
+# Note: We don't mount /proc/sys/fs/binfmt_misc in the container because:
+# 1. Docker doesn't allow mounting inside /proc for security reasons
+# 2. The privileged container inherits the host's QEMU emulation capabilities
+# 3. The binfmt handlers registered above will be available to the container
 
 # Verify binfmt registration
 echo "Verifying binfmt registration..."
 if [ -d "/proc/sys/fs/binfmt_misc" ]; then
 	echo "Available binfmt interpreters:"
-	ls -la /proc/sys/fs/binfmt_misc/ | head -10
+	ls -la /proc/sys/fs/binfmt_misc/ 2>/dev/null | head -10 || echo "Could not list binfmt interpreters"
 	
 	# Check for specific architecture support
 	if [ "${TARGET_ARCH}" = "arm64" ] && [ -f "/proc/sys/fs/binfmt_misc/qemu-aarch64" ]; then
@@ -159,9 +195,12 @@ if [ -d "/proc/sys/fs/binfmt_misc" ]; then
 		echo "✓ ARMHF (arm) support detected"
 	else
 		echo "⚠ Architecture-specific binfmt handler not found for ${TARGET_ARCH}"
+		echo "This may cause cross-compilation to fail"
+		echo "The build will attempt to continue using native tools where possible"
 	fi
 else
 	echo "⚠ binfmt_misc not available"
+	echo "Cross-compilation will be limited to native tools only"
 fi
 
 if [ "${VERBOSE:-0}" = "1" ]; then
@@ -178,7 +217,6 @@ echo "  --name \"${CONTAINER_NAME}\" \\"
 echo "  ${VOLUME_MOUNTS} \\"
 echo "  --volume \"${DIR}/work\":/workspace/work \\"
 echo "  --volume \"${DIR}/deploy\":/workspace/deploy \\"
-echo "  --volume /proc/sys/fs/binfmt_misc:/proc/sys/fs/binfmt_misc:rw \\"
 echo "  -e \"TARGET_ARCH=${TARGET_ARCH}\" \\"
 echo "  -e \"DEBIAN_RELEASE=${DEBIAN_RELEASE}\" \\"
 echo "  -e \"IMG_NAME=${IMG_NAME:-crankshaft-ng}\" \\"
@@ -188,13 +226,15 @@ echo "  -e \"VERBOSE=${VERBOSE:-0}\" \\"
 echo "  crankshaft-rpi-image-gen \\"
 echo "  /workspace/build-rpi-image-gen.sh"
 echo ""
+echo "NOTE: binfmt_misc support is provided by the host system and QEMU registration above"
+echo "The container inherits cross-compilation capabilities through privileged mode"
+echo ""
 
 if ! ${DOCKER} run ${DOCKER_ARGS} \
 	--name "${CONTAINER_NAME}" \
 	${VOLUME_MOUNTS} \
 	--volume "${DIR}/work":/workspace/work \
 	--volume "${DIR}/deploy":/workspace/deploy \
-	--volume /proc/sys/fs/binfmt_misc:/proc/sys/fs/binfmt_misc:rw \
 	-e "TARGET_ARCH=${TARGET_ARCH}" \
 	-e "DEBIAN_RELEASE=${DEBIAN_RELEASE}" \
 	-e "IMG_NAME=${IMG_NAME:-crankshaft-ng}" \

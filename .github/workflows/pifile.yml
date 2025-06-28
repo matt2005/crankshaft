@@ -192,14 +192,27 @@ jobs:
           echo "Checking binfmt_misc filesystem..."
           if [ ! -d "/proc/sys/fs/binfmt_misc" ]; then
             echo "Mounting binfmt_misc filesystem..."
-            sudo mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc
+            sudo mkdir -p /proc/sys/fs/binfmt_misc 2>/dev/null || true
+            sudo mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null || {
+              echo "Could not mount binfmt_misc, checking if it's already handled..."
+              # In some environments, binfmt_misc might be handled differently
+              if [ -f "/proc/sys/fs/binfmt_misc/status" ] 2>/dev/null; then
+                echo "binfmt_misc appears to be available through alternate path"
+              else
+                echo "binfmt_misc not available - cross-compilation may be limited"
+              fi
+            }
           else
             echo "binfmt_misc filesystem already mounted"
           fi
           
           # Register QEMU binfmt handlers
           echo "Registering QEMU binfmt handlers..."
-          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes || {
+            echo "WARNING: Could not register QEMU binfmt handlers using Docker"
+            echo "This might be due to Docker restrictions or missing image"
+            echo "Attempting to continue without explicit registration..."
+          }
           
           # Verify binfmt registration
           echo "Verifying binfmt registration:"
