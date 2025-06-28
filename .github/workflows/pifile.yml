@@ -1,13 +1,12 @@
 name: "Crankshaft Build"
 
-# Crankshaft automated build using official Raspberry Pi rpi-image-gen
-# Builds both arm64 and armhf versions for Debian Bookworm
+# Crankshaft automated build using native rpi-image-gen
+# Builds both arm64 and armhf versions for Debian Bookworm using native tools
 # Generates release artifacts with checksums and optional SBOM
 # 
-# This workflow uses the latest versions of GitHub Actions and best practices:
+# This workflow uses native builds instead of Docker to avoid cross-compilation issues:
 # - actions/checkout@v4
-# - docker/setup-buildx-action@v3
-# - docker/setup-qemu-action@v3
+# - Native debootstrap with minimal QEMU emulation for cross-arch builds
 # - actions/upload-artifact@v4
 # - mikepenz/release-changelog-builder-action@v5
 # - svenstaro/upload-release-action@v2
@@ -110,7 +109,7 @@ jobs:
           echo "Build name: ${buildname}"
   build:
     name: "Build ${{ matrix.config.name }}"
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.config.runner }}
     needs: [version]
     timeout-minutes: 180
     strategy:
@@ -123,14 +122,18 @@ jobs:
               arch: "arm64",
               osname: "bookworm",
               ostype: "Debian",
-              platforms: "linux/arm64"
+              platforms: "linux/arm64",
+              runner: "ubuntu-22.04",
+              native: false
             }
           - {
               name: "Debian Bookworm armhf",
               arch: "armhf", 
               osname: "bookworm",
               ostype: "Debian",
-              platforms: "linux/arm/v7"
+              platforms: "linux/arm/v7",
+              runner: "ubuntu-22.04",
+              native: false
             }
     
     outputs:
@@ -170,63 +173,53 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: "Set up Docker Buildx"
-        if: steps.arch_filter.outputs.skip != 'true'
-        uses: docker/setup-buildx-action@v3
-        with:
-          platforms: ${{ matrix.config.platforms }}
-
-#      - name: "Set up QEMU"
-#        if: steps.arch_filter.outputs.skip != 'true'
-#        uses: docker/setup-qemu-action@v3
-#        with:
-#          platforms: ${{ matrix.config.platforms }}
-
-      - name: "Setup additional QEMU and binfmt"
+      - name: "Setup native build environment"
         if: steps.arch_filter.outputs.skip != 'true'
         run: |
-          # Set up QEMU with binfmt registration for cross-compilation
-          echo "Setting up QEMU and binfmt for cross-compilation..."
+          echo "Setting up native build environment for ${{ matrix.config.arch }}"
+          echo "Runner: ${{ matrix.config.runner }}"
+          echo "Target architecture: ${{ matrix.config.arch }}"
+          echo "Host architecture: $(uname -m)"
           
-          # Check if binfmt_misc module is loaded
-          echo "Checking binfmt_misc kernel module..."
-          if ! lsmod | grep -q binfmt_misc; then
-            echo "binfmt_misc module not loaded, attempting to load it..."
-            sudo modprobe binfmt_misc 2>/dev/null || {
-              echo "Could not load binfmt_misc module"
-              echo "This might be due to:"
-              echo "  - Running in a container without module loading privileges"
-              echo "  - Kernel without binfmt_misc support"
-              echo "  - Security restrictions"
-              echo "Will attempt alternative QEMU setup..."
-            }
-          else
-            echo "binfmt_misc module already loaded"
-          fi
+          # Install required packages for native building
+          sudo apt-get update
+          sudo apt-get install -y \
+            git vim parted curl wget \
+            debootstrap zerofree zip dosfstools \
+            tar libcap2-bin rsync grep udev xz-utils xxd file kmod bc \
+            systemd-container fdisk gdisk \
+            python3 python3-pip python3-yaml python3-venv \
+            ca-certificates \
+            build-essential \
+            lsb-release \
+            sudo \
+            qemu-user-static \
+            binfmt-support
           
-          # Ensure binfmt_misc filesystem is mounted
-          echo "Checking binfmt_misc filesystem..."
-          if [ ! -d "/proc/sys/fs/binfmt_misc" ]; then
-            echo "Mounting binfmt_misc filesystem..."
-            sudo mkdir -p /proc/sys/fs/binfmt_misc 2>/dev/null || true
-            sudo mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null || {
-              echo "Could not mount binfmt_misc filesystem"
-              echo "Will use Docker's built-in QEMU support instead"
-            }
-          else
-            echo "binfmt_misc filesystem already mounted"
-          fi
+          # For native builds, we'll build directly without Docker
+          echo "Native build environment ready"
+
+      - name: "Setup minimal cross-compilation support"
+        if: steps.arch_filter.outputs.skip != 'true'
+        run: |
+          echo "Setting up minimal cross-compilation support for native builds..."
           
-          # Register QEMU binfmt handlers using Docker's multiarch support
-          echo "Setting up QEMU emulation..."
-          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes 2>/dev/null || {
-            echo "Standard QEMU registration failed, trying alternative method..."
+          # For native builds on x86_64, we only need minimal QEMU support
+          # This avoids all the complex binfmt_misc setup issues
+          if [ "$(uname -m)" = "x86_64" ] && [ "${{ matrix.config.arch }}" != "amd64" ]; then
+            echo "Host is x86_64, target is ${{ matrix.config.arch }}"
+            echo "Setting up minimal QEMU for debootstrap..."
             
-            # Alternative: Use docker buildx which has built-in QEMU support
-            docker buildx create --use --name multiarch --driver docker-container 2>/dev/null || true
-            docker buildx inspect --bootstrap 2>/dev/null || {
-              echo "Docker buildx also failed, but this may still work in privileged containers"
-            }
+            # Install and configure QEMU user static
+            sudo apt-get install -y qemu-user-static binfmt-support
+            
+            # Simple QEMU registration for debootstrap only
+            sudo update-binfmts --enable
+            
+            echo "Minimal QEMU setup completed for debootstrap"
+          else
+            echo "Native build detected or no cross-compilation needed"
+          fi
           }
          
           # Verify setup
@@ -288,14 +281,6 @@ jobs:
 #          elif [[ "${{ matrix.config.arch }}" == "armhf" ]]; then
 #            echo "Testing ARMHF emulation:"
 #            docker run --rm --platform=linux/arm/v7 arm32v7/alpine:latest uname -a || echo "ARMHF test failed"
-#          fi
-
-      - name: Set up QEMU
-        id: qemu
-        uses: docker/setup-qemu-action@v3
-        with:
-          image: tonistiigi/binfmt:latest
-          platforms: all
       - name: "Generate build information"
         if: steps.arch_filter.outputs.skip != 'true'
         id: build_info
@@ -328,25 +313,20 @@ jobs:
           # Update system
           sudo apt-get update
           
-          # Install required packages for cross-compilation
+          # Install required packages for native building
           sudo apt-get install -y \
-            qemu-user-static \
-            binfmt-support \
-            debootstrap \
-            systemd-container \
-            zip \
-            curl
+            git vim parted curl wget \
+            qemu-user-static binfmt-support debootstrap zerofree zip dosfstools \
+            tar libcap2-bin rsync grep udev xz-utils xxd file kmod bc \
+            systemd-container fdisk gdisk \
+            python3 python3-pip python3-yaml python3-venv \
+            ca-certificates \
+            build-essential \
+            lsb-release \
+            sudo
           
-          # Verify binfmt support
-          echo "Available binfmt interpreters:"
-          ls -la /proc/sys/fs/binfmt_misc/ || true
-          
-          # Configure Docker for experimental features
-          echo '{"experimental": true, "features": {"buildkit": true}}' | sudo tee /etc/docker/daemon.json
-          sudo systemctl restart docker
-          
-          # Wait for Docker to restart
-          sleep 5
+          # Install rpi-image-gen dependencies
+          git clone --depth 1 https://github.com/raspberrypi/rpi-image-gen.git rpi-image-gen-upstream
           
           # Generate configuration file
           cat > config << EOF
@@ -380,22 +360,34 @@ jobs:
             echo "No validation script found at ./scripts/validate-rpi-image-gen.sh"
           fi
           
-          # Verify Docker and buildx
-          echo "=== Docker Version ==="
-          docker --version
-          echo "=== Docker Info ==="
-          docker info
-          echo "=== Docker Buildx Version ==="
-          docker buildx version
+          # Verify native build tools
+          echo "=== Native Build Environment ==="
+          echo "Host architecture: $(uname -m)"
+          echo "Target architecture: ${{ matrix.config.arch }}"
+          echo "Debian release: ${{ matrix.config.osname }}"
           
-          # Verify QEMU is working (already set up in previous step)
-          echo "=== Verifying QEMU Setup ==="
-          if [[ "${{ matrix.config.arch }}" == "arm64" ]]; then
-            echo "Verifying ARM64 support..."
-            docker run --rm --platform=linux/arm64 arm64v8/alpine:latest echo "ARM64 QEMU working" || echo "ARM64 test failed"
-          elif [[ "${{ matrix.config.arch }}" == "armhf" ]]; then
-            echo "Verifying ARMHF support..."
-            docker run --rm --platform=linux/arm/v7 arm32v7/alpine:latest echo "ARMHF QEMU working" || echo "ARMHF test failed"
+          echo "=== Available build tools ==="
+          which debootstrap || echo "debootstrap not found"
+          which qemu-user-static || echo "qemu-user-static not found"
+          which parted || echo "parted not found"
+          which fdisk || echo "fdisk not found"
+          
+          # Verify binfmt support for cross-compilation if needed
+          if [ "$(uname -m)" = "x86_64" ] && [ "${{ matrix.config.arch }}" != "amd64" ]; then
+            echo "=== Cross-compilation setup verification ==="
+            echo "Available binfmt interpreters:"
+            ls -la /proc/sys/fs/binfmt_misc/ 2>/dev/null || echo "binfmt_misc not mounted"
+            
+            # Test QEMU emulation
+            if [ "${{ matrix.config.arch }}" = "arm64" ] && which qemu-aarch64-static >/dev/null; then
+              echo "Testing ARM64 emulation:"
+              qemu-aarch64-static --version | head -1
+            elif [ "${{ matrix.config.arch }}" = "armhf" ] && which qemu-arm-static >/dev/null; then
+              echo "Testing ARMHF emulation:"
+              qemu-arm-static --version | head -1
+            fi
+          else
+            echo "Native build or no cross-compilation needed"
           fi
           
           # Check available build scripts
@@ -408,8 +400,6 @@ jobs:
         run: |
           # Set build environment variables
           export VERBOSE=1
-          export DOCKER_BUILDKIT=1
-          export BUILDX_NO_DEFAULT_ATTESTATIONS=1
           
           # Enable debug mode if requested
           if [[ "${{ github.event.inputs.debug }}" == "true" ]]; then
@@ -417,59 +407,38 @@ jobs:
             set -x
           fi
           
-          echo "Starting rpi-image-gen build for ${{ matrix.config.arch }} on ${{ matrix.config.osname }}"
+          echo "Starting native rpi-image-gen build for ${{ matrix.config.arch }} on ${{ matrix.config.osname }}"
           echo "Build version: ${{ needs.version.outputs.version }}"
+          echo "Host architecture: $(uname -m)"
           
           # Ensure build script exists and is executable
-          if [ ! -f "./build-docker-rpi-image-gen.sh" ]; then
-            echo "ERROR: build-docker-rpi-image-gen.sh not found!"
+          if [ ! -f "./build-rpi-image-gen.sh" ]; then
+            echo "ERROR: build-rpi-image-gen.sh not found!"
             echo "Available files:"
             ls -la
             exit 1
           fi
           
-          chmod +x ./build-docker-rpi-image-gen.sh
+          chmod +x ./build-rpi-image-gen.sh
           
-          # Test Docker build first with detailed output
-          echo "=== Testing Docker build ==="
-          echo "Dockerfile contents:"
-          cat Dockerfile
-          echo "=== Building Docker image ==="
-          if ! docker build --no-cache -t crankshaft-rpi-image-gen .; then
-            echo "ERROR: Docker build failed"
-            echo "Docker info:"
-            docker info
-            echo "Docker version:"
-            docker version
-            echo "Docker system df:"
-            docker system df
-            echo "Available space:"
-            df -h
-            echo "Docker build logs (last 100 lines):"
-            docker build --no-cache -t crankshaft-rpi-image-gen . 2>&1 | tail -100 || true
-            exit 1
-          fi
+          # Create work and deploy directories
+          mkdir -p work deploy
           
-          echo "=== Docker build successful ==="
-          docker images crankshaft-rpi-image-gen
+          echo "=== Starting native build ==="
           
-          # Test container startup
-          echo "=== Testing container startup ==="
-          if ! docker run --rm crankshaft-rpi-image-gen echo "Container test successful"; then
-            echo "ERROR: Container startup test failed"
-            exit 1
-          fi
-          
-          echo "=== Starting actual build ==="
-          
-          # Run the build using our Docker wrapper script
-          if ! ./build-docker-rpi-image-gen.sh \
+          # Run the build directly without Docker
+          if ! ./build-rpi-image-gen.sh \
             -a "${{ matrix.config.arch }}" \
             -r "${{ matrix.config.osname }}" \
-            -v; then
-            echo "ERROR: Build script failed"
-            echo "=== Checking for container logs ==="
-            docker ps -a | grep crankshaft || echo "No containers found"
+            -n "crankshaft-ng-${{ needs.version.outputs.version }}"; then
+            echo "ERROR: Native build script failed"
+            echo "=== Checking build logs ==="
+            if [ -f "work/build.log" ]; then
+              echo "Build log contents:"
+              tail -100 work/build.log
+            else
+              echo "No build log found"
+            fi
             exit 1
           fi
             
@@ -492,8 +461,6 @@ jobs:
           echo "=== All files in current directory ==="
           find . -name "*.img" -o -name "*.zip" | head -10
         timeout-minutes: 120
-        env:
-          DOCKER_BUILDKIT: 1
 
       - name: "Find and prepare built image"
         if: steps.arch_filter.outputs.skip != 'true'
