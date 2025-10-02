@@ -1,0 +1,63 @@
+# Crankshaft Required Packages
+# Base system packages needed for Crankshaft functionality
+
+# Audio system
+pulseaudio
+pulseaudio-module-bluetooth
+pulseaudio-utils
+alsa-utils
+alsa-tools
+
+# Bluetooth support
+bluez
+bluez-tools
+bluetooth
+pi-bluetooth
+
+# Network tools
+hostapd
+dnsmasq
+iptables-persistent
+bridge-utils
+iw
+wireless-tools
+wpasupplicant
+
+# USB and hardware support
+libusb-1.0-0
+usbutils
+usb-modeswitch
+usb-modeswitch-data
+
+# Android/development tools
+android-tools-adb
+android-tools-fastboot
+
+# Video and graphics
+omxplayer
+vlc-bin
+vlc-plugin-base
+
+# Python and development
+python3
+python3-pip
+python3-dev
+python3-setuptools
+python3-wheel
+python3-bluetooth
+python3-dbus
+python3-gi
+
+# System utilities
+git
+curl
+wget
+unzip
+zip
+rsync
+htop
+nano
+vim-tiny
+
+# Automotive specific
+can-utils
