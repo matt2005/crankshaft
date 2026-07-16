@@ -70,6 +70,7 @@ Formalizing the existing WS transport captures prior investment while enabling p
 - Introduce `client_hello` in permissive mode first.
 - Add configurable enforcement switches in core.
 - Roll out strict enforcement after client adoption.
+- Maintain `docs/COMPATIBILITY-MATRIX.md` with current client version compatibility and deprecation ownership.
 
 ## Security and Reliability Considerations
 
@@ -100,4 +101,5 @@ Client ownership:
 
 - ADR-0001
 - ADR-0003
+- `docs/COMPATIBILITY-MATRIX.md`
 - `docs/ADR/ADR-TEMPLATE.md`
